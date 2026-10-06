@@ -52,3 +52,24 @@ export async function onRequestPut(context) {
     return json({ error: e.message || 'Could not update matter' }, 400);
   }
 }
+
+export async function onRequestDelete(context) {
+  const denied = await requireAuth(context); if (denied) return denied;
+  const id = Number(context.params.id);
+  if (!id) return json({ error: 'Invalid matter' }, 400);
+  const matter = await context.env.DB.prepare('SELECT id, cause_title FROM matters WHERE id=?1').bind(id).first();
+  if (!matter) return json({ error: 'Matter not found' }, 404);
+
+  try {
+    await context.env.DB.batch([
+      context.env.DB.prepare(`DELETE FROM hearing_applications WHERE hearing_id IN (SELECT id FROM hearings WHERE matter_id=?1)`).bind(id),
+      context.env.DB.prepare(`DELETE FROM hearing_applications WHERE application_id IN (SELECT id FROM applications WHERE matter_id=?1)`).bind(id),
+      context.env.DB.prepare('DELETE FROM hearings WHERE matter_id=?1').bind(id),
+      context.env.DB.prepare('DELETE FROM applications WHERE matter_id=?1').bind(id),
+      context.env.DB.prepare('DELETE FROM matters WHERE id=?1').bind(id),
+    ]);
+    return json({ ok: true, deleted_id: id });
+  } catch (e) {
+    return json({ error: e.message || 'Could not delete matter' }, 400);
+  }
+}
