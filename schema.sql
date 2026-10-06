@@ -39,3 +39,31 @@ CREATE TABLE IF NOT EXISTS hearings (
 CREATE INDEX IF NOT EXISTS idx_matters_status_next ON matters(status, next_hearing_date);
 CREATE INDEX IF NOT EXISTS idx_matters_updated ON matters(updated_at);
 CREATE INDEX IF NOT EXISTS idx_hearings_matter_date ON hearings(matter_id, hearing_date DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS applications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  matter_id INTEGER NOT NULL,
+  ia_number TEXT NOT NULL,
+  title TEXT,
+  status TEXT NOT NULL DEFAULT 'Pending',
+  bench TEXT,
+  next_hearing_date TEXT,
+  next_hearing_notes TEXT,
+  notes TEXT,
+  official_url TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (matter_id) REFERENCES matters(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS hearing_applications (
+  hearing_id INTEGER NOT NULL,
+  application_id INTEGER NOT NULL,
+  PRIMARY KEY (hearing_id, application_id),
+  FOREIGN KEY (hearing_id) REFERENCES hearings(id) ON DELETE CASCADE,
+  FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_applications_matter ON applications(matter_id, status, next_hearing_date);
+CREATE INDEX IF NOT EXISTS idx_applications_next ON applications(next_hearing_date, status);
+CREATE INDEX IF NOT EXISTS idx_hearing_applications_application ON hearing_applications(application_id, hearing_id);

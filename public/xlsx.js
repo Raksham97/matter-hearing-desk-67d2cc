@@ -1,70 +1,34 @@
 (function(global){
   function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&apos;');}
-  function col(n){let s=''; while(n){n--; s=String.fromCharCode(65+n%26)+s; n=Math.floor(n/26);} return s;}
+  function col(n){let s='';while(n){n--;s=String.fromCharCode(65+n%26)+s;n=Math.floor(n/26);}return s;}
   const crcTable=(()=>{const t=[];for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=(c&1)?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0;}return t;})();
-  function crc32(u8){let c=0xFFFFFFFF;for(const b of u8)c=crcTable[(c^b)&255]^(c>>>8);return (c^0xFFFFFFFF)>>>0;}
-  function u16(n){return new Uint8Array([n&255,(n>>>8)&255]);}
-  function u32(n){return new Uint8Array([n&255,(n>>>8)&255,(n>>>16)&255,(n>>>24)&255]);}
+  function crc32(u8){let c=0xFFFFFFFF;for(const b of u8)c=crcTable[(c^b)&255]^(c>>>8);return(c^0xFFFFFFFF)>>>0;}
+  const u16=n=>new Uint8Array([n&255,(n>>>8)&255]);
+  const u32=n=>new Uint8Array([n&255,(n>>>8)&255,(n>>>16)&255,(n>>>24)&255]);
   function concat(parts){let len=parts.reduce((a,b)=>a+b.length,0),o=new Uint8Array(len),p=0;for(const b of parts){o.set(b,p);p+=b.length;}return o;}
-  function zip(entries){
-    const te=new TextEncoder(), locals=[], centrals=[]; let offset=0;
-    for(const e of entries){
-      const name=te.encode(e.name), data=typeof e.data==='string'?te.encode(e.data):e.data, crc=crc32(data);
-      const lh=concat([u32(0x04034b50),u16(20),u16(0),u16(0),u16(0),u16(0),u32(crc),u32(data.length),u32(data.length),u16(name.length),u16(0),name,data]);
-      locals.push(lh);
-      const ch=concat([u32(0x02014b50),u16(20),u16(20),u16(0),u16(0),u16(0),u16(0),u32(crc),u32(data.length),u32(data.length),u16(name.length),u16(0),u16(0),u16(0),u16(0),u32(0),u32(offset),name]);
-      centrals.push(ch); offset+=lh.length;
-    }
-    const central=concat(centrals), local=concat(locals);
-    const end=concat([u32(0x06054b50),u16(0),u16(0),u16(entries.length),u16(entries.length),u32(central.length),u32(local.length),u16(0)]);
-    return new Blob([local,central,end],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
-  }
-  function cleanSheetName(name, used){
-    let s=String(name||'Matter').replace(/[\\\/?*\[\]:]/g,' ').replace(/\s+/g,' ').trim().slice(0,31)||'Matter';
-    let base=s,i=2; while(used.has(s)){const suf=' '+i++;s=base.slice(0,31-suf.length)+suf;} used.add(s);return s;
-  }
-  function cellXml(r,c,v,style=0){
-    if(v===null||v===undefined||v==='')return '';
-    const ref=col(c)+r, st=style?` s="${style}"`:'';
-    if(typeof v==='number' && Number.isFinite(v)) return `<c r="${ref}"${st}><v>${v}</v></c>`;
-    return `<c r="${ref}" t="inlineStr"${st}><is><t xml:space="preserve">${esc(v)}</t></is></c>`;
-  }
-  function makeSheet(rows, widths, links){
-    let xml=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">`;
-    if(widths?.length){xml+='<cols>'+widths.map((w,i)=>`<col min="${i+1}" max="${i+1}" width="${w}" customWidth="1"/>`).join('')+'</cols>';}
-    xml+='<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetData>';
-    rows.forEach((row,ri)=>{const r=ri+1;xml+=`<row r="${r}">`;row.forEach((v,ci)=>xml+=cellXml(r,ci+1,v,ri===0?1:0));xml+='</row>';});
-    xml+='</sheetData>';
-    const internal=(links||[]).filter(x=>x.location);
-    const external=(links||[]).filter(x=>x.target);
-    if(internal.length||external.length){xml+='<hyperlinks>'; for(const l of internal)xml+=`<hyperlink ref="${l.ref}" location="${esc(l.location)}" display="${esc(l.display||'Open')}"/>`; external.forEach((l,i)=>xml+=`<hyperlink ref="${l.ref}" r:id="rId${i+1}" display="${esc(l.display||'Open')}"/>`); xml+='</hyperlinks>';}
-    xml+='</worksheet>';
-    let rels=null;
-    if(external.length){rels=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">`+external.map((l,i)=>`<Relationship Id="rId${i+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${esc(l.target)}" TargetMode="External"/>`).join('')+'</Relationships>';}
-    return {xml,rels};
-  }
+  function zip(entries){const te=new TextEncoder(),locals=[],centrals=[];let offset=0;for(const e of entries){const name=te.encode(e.name),data=typeof e.data==='string'?te.encode(e.data):e.data,crc=crc32(data);const lh=concat([u32(0x04034b50),u16(20),u16(0),u16(0),u16(0),u16(0),u32(crc),u32(data.length),u32(data.length),u16(name.length),u16(0),name,data]);locals.push(lh);const ch=concat([u32(0x02014b50),u16(20),u16(20),u16(0),u16(0),u16(0),u16(0),u32(crc),u32(data.length),u32(data.length),u16(name.length),u16(0),u16(0),u16(0),u16(0),u32(0),u32(offset),name]);centrals.push(ch);offset+=lh.length;}const central=concat(centrals),local=concat(locals),end=concat([u32(0x06054b50),u16(0),u16(0),u16(entries.length),u16(entries.length),u32(central.length),u32(local.length),u16(0)]);return new Blob([local,central,end],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});}
+  function cleanSheetName(name,used){let s=String(name||'Matter').replace(/[\\\/?*\[\]:]/g,' ').replace(/\s+/g,' ').trim().slice(0,31)||'Matter';let base=s,i=2;while(used.has(s)){const suf=' '+i++;s=base.slice(0,31-suf.length)+suf;}used.add(s);return s;}
+  function cellXml(r,c,v,style=0){if(v===null||v===undefined||v==='')return'';const ref=col(c)+r,st=style?` s="${style}"`:'';if(typeof v==='number'&&Number.isFinite(v))return`<c r="${ref}"${st}><v>${v}</v></c>`;return`<c r="${ref}" t="inlineStr"${st}><is><t xml:space="preserve">${esc(v)}</t></is></c>`;}
+  function makeSheet(rows,widths,links){let xml=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">`;if(widths?.length)xml+='<cols>'+widths.map((w,i)=>`<col min="${i+1}" max="${i+1}" width="${w}" customWidth="1"/>`).join('')+'</cols>';xml+='<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetData>';rows.forEach((row,ri)=>{const r=ri+1;xml+=`<row r="${r}">`;row.forEach((v,ci)=>xml+=cellXml(r,ci+1,v,ri===0?1:0));xml+='</row>';});xml+='</sheetData>';const internal=(links||[]).filter(x=>x.location),external=(links||[]).filter(x=>x.target);if(internal.length||external.length){xml+='<hyperlinks>';for(const l of internal)xml+=`<hyperlink ref="${l.ref}" location="${esc(l.location)}" display="${esc(l.display||'Open')}"/>`;external.forEach((l,i)=>xml+=`<hyperlink ref="${l.ref}" r:id="rId${i+1}" display="${esc(l.display||'Open')}"/>`);xml+='</hyperlinks>';}xml+='</worksheet>';let rels=null;if(external.length)rels=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">`+external.map((l,i)=>`<Relationship Id="rId${i+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${esc(l.target)}" TargetMode="External"/>`).join('')+'</Relationships>';return{xml,rels};}
   function downloadWorkbook(data){
-    const used=new Set(['Index']), matters=data.matters||[], hearings=data.hearings||[], sheetNames=new Map();
-    for(const m of matters) sheetNames.set(m.id, cleanSheetName(m.short_name||m.cause_title,used));
-    const entries=[]; const sheets=[];
-    const upcoming=matters.filter(m=>m.status==='Active'&&m.next_hearing_date).sort((a,b)=>a.next_hearing_date.localeCompare(b.next_hearing_date));
-    const idxRows=[['Matter Hearing Tracker','','','','','',''],['Generated',data.exported_at||new Date().toISOString(),'','','','',''],['','','','','','',''],['Upcoming / Matter Index','','','','','',''],['Cause Title','Forum','Bench','Case No.','Next Hearing','Next IA','Status']];
+    const matters=data.matters||[],apps=data.applications||[],hearings=data.hearings||[],links=data.hearing_applications||[];
+    const used=new Set(['Index']),sheetNames=new Map();for(const m of matters)sheetNames.set(m.id,cleanSheetName(m.short_name||m.cause_title,used));
+    const entries=[],sheets=[];
+    const idxRows=[['Matter Hearing Tracker','','','','','',''],['Generated',data.exported_at||new Date().toISOString(),'','','','',''],['','','','','','',''],['Matter Index','','','','','',''],['Cause Title','Forum','Bench','Case No.','IA / Application Count','Next Hearing','Status']];
     const idxLinks=[];
-    matters.sort((a,b)=>(a.status==='Active'?0:1)-(b.status==='Active'?0:1)||(a.next_hearing_date||'9999').localeCompare(b.next_hearing_date||'9999')||a.cause_title.localeCompare(b.cause_title)).forEach((m,i)=>{idxRows.push([m.cause_title,m.forum||'',m.bench||'',m.case_number||'',m.next_hearing_date||'',m.next_ia_number||'',m.status||'']);const row=idxRows.length;idxLinks.push({ref:`A${row}`,location:`'${sheetNames.get(m.id).replace(/'/g,"''")}'!A1`,display:m.cause_title});});
-    const idx=makeSheet(idxRows,[42,12,24,22,15,18,12],idxLinks); entries.push({name:'xl/worksheets/sheet1.xml',data:idx.xml}); sheets.push({name:'Index',path:'worksheets/sheet1.xml'});
+    const sorted=[...matters].sort((a,b)=>(a.status==='Active'?0:1)-(b.status==='Active'?0:1)||a.cause_title.localeCompare(b.cause_title));
+    for(const m of sorted){const ma=apps.filter(a=>a.matter_id===m.id),open=ma.filter(a=>!['Disposed','Allowed','Dismissed','Withdrawn','Closed'].includes(a.status));const next=[...open.map(a=>a.next_hearing_date).filter(Boolean),m.next_hearing_date].filter(Boolean).sort()[0]||'';idxRows.push([m.cause_title,m.forum||'',m.bench||'',m.case_number||'',`${ma.length} (${open.length} open)`,next,m.status||'']);const row=idxRows.length;idxLinks.push({ref:`A${row}`,location:`'${sheetNames.get(m.id).replace(/'/g,"''")}'!A1`,display:m.cause_title});}
+    const idx=makeSheet(idxRows,[42,12,24,22,20,15,12],idxLinks);entries.push({name:'xl/worksheets/sheet1.xml',data:idx.xml});sheets.push({name:'Index',path:'worksheets/sheet1.xml'});
     let n=2;
-    for(const m of matters){
+    for(const m of sorted){
+      const ma=apps.filter(a=>a.matter_id===m.id).sort((a,b)=>(a.next_hearing_date||'9999').localeCompare(b.next_hearing_date||'9999')||a.ia_number.localeCompare(b.ia_number));
       const hs=hearings.filter(h=>h.matter_id===m.id).sort((a,b)=>a.hearing_date.localeCompare(b.hearing_date)||a.id-b.id);
-      const rows=[
-        [m.cause_title,'','','','','','',''],
-        ['Forum',m.forum||'','Bench',m.bench||'','Case No.',m.case_number||'','Status',m.status||''],
-        ['Next Hearing',m.next_hearing_date||'','Next IA',m.next_ia_number||'','Next Notes',m.next_hearing_notes||'','',''],
-        ['','','','','','','',''],
-        ['Hearing Date','IA','Bench','Notes','Outcome','Next Hearing','Order','Order Title']
-      ];
-      const links=[];
-      for(const h of hs){rows.push([h.hearing_date||'',h.ia_number||'',h.bench||'',h.notes||'',h.outcome||'',h.next_hearing_date||'',h.order_url?'Open order':'',h.order_title||'']);if(h.order_url)links.push({ref:`G${rows.length}`,target:h.order_url,display:'Open order'});}
-      const sh=makeSheet(rows,[15,20,24,42,42,15,18,28],links); const fname=`xl/worksheets/sheet${n}.xml`;entries.push({name:fname,data:sh.xml});if(sh.rels)entries.push({name:`xl/worksheets/_rels/sheet${n}.xml.rels`,data:sh.rels});sheets.push({name:sheetNames.get(m.id),path:`worksheets/sheet${n}.xml`});n++;
+      const rows=[[m.cause_title,'','','','','','',''],['Forum',m.forum||'','Default Bench',m.bench||'','Main Case No.',m.case_number||'','Status',m.status||''],['General Notes',m.notes||'','','','','','',''],['','','','','','','',''],['IA / Application Register','','','','','','',''],['IA / Application','Title / Purpose','Status','Bench','Next Hearing','Prep Notes','Official Link','Notes']];
+      const extLinks=[];
+      for(const a of ma){rows.push([a.ia_number||'',a.title||'',a.status||'',a.bench||'',a.next_hearing_date||'',a.next_hearing_notes||'',a.official_url?'Open':'',a.notes||'']);if(a.official_url)extLinks.push({ref:`G${rows.length}`,target:a.official_url,display:'Open'});}
+      rows.push(['','','','','','','',''],['Hearing History','','','','','','',''],['Hearing Date','IA(s) / Application(s)','Bench','Notes','Outcome','Next Hearing','Order','Order Title']);
+      for(const h of hs){const linkedIds=links.filter(l=>l.hearing_id===h.id).map(l=>l.application_id),labels=linkedIds.map(id=>ma.find(a=>a.id===id)?.ia_number).filter(Boolean);rows.push([h.hearing_date||'',labels.join(' · ')||h.ia_number||'Main matter',h.bench||'',h.notes||'',h.outcome||'',h.next_hearing_date||'',h.order_url?'Open order':'',h.order_title||'']);if(h.order_url)extLinks.push({ref:`G${rows.length}`,target:h.order_url,display:'Open order'});}
+      const sh=makeSheet(rows,[18,32,16,24,15,42,18,42],extLinks),fname=`xl/worksheets/sheet${n}.xml`;entries.push({name:fname,data:sh.xml});if(sh.rels)entries.push({name:`xl/worksheets/_rels/sheet${n}.xml.rels`,data:sh.rels});sheets.push({name:sheetNames.get(m.id),path:`worksheets/sheet${n}.xml`});n++;
     }
     const wb=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>`+sheets.map((s,i)=>`<sheet name="${esc(s.name)}" sheetId="${i+1}" r:id="rId${i+1}"/>`).join('')+`</sheets></workbook>`;
     const wbRels=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">`+sheets.map((s,i)=>`<Relationship Id="rId${i+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="${s.path}"/>`).join('')+`<Relationship Id="rId${sheets.length+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`;
@@ -72,7 +36,7 @@
     const ct=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>`+sheets.map((_,i)=>`<Override PartName="/xl/worksheets/sheet${i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')+`</Types>`;
     const rootRels=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
     entries.push({name:'[Content_Types].xml',data:ct},{name:'_rels/.rels',data:rootRels},{name:'xl/workbook.xml',data:wb},{name:'xl/_rels/workbook.xml.rels',data:wbRels},{name:'xl/styles.xml',data:styles});
-    const blob=zip(entries), a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='hearing-matter-tracker.xlsx';document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},1000);
+    const blob=zip(entries),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='hearing-matter-tracker.xlsx';document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},1000);
   }
   global.MatterDeskXLSX={downloadWorkbook};
 })(window);
