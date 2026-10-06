@@ -29,6 +29,7 @@ export async function onRequestDelete(context) {
   const id = Number(context.params.id);
   if (!id) return json({ error: 'Invalid application' }, 400);
   await context.env.DB.prepare('DELETE FROM hearing_applications WHERE application_id=?1').bind(id).run();
+  await context.env.DB.prepare('DELETE FROM nclt_order_applications WHERE application_id=?1').bind(id).run();
   await context.env.DB.prepare('DELETE FROM applications WHERE id=?1').bind(id).run();
   return json({ ok: true });
 }

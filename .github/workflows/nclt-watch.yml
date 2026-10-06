@@ -1,0 +1,35 @@
+name: NCLT Matter Watch
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 2,8,14 * * *' # approx 08:00, 14:00, 20:00 IST
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nclt-matter-watch
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout tracker source
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install public-source parser dependencies
+        run: pip install --disable-pip-version-check requests beautifulsoup4 pypdf
+
+      - name: Check NCLT for new IAs and orders
+        env:
+          MATTER_DESK_URL: https://matter-desk-67d2cc.pages.dev
+          NCLT_WATCH_SECRET: ${{ secrets.NCLT_WATCH_SECRET }}
+        run: python scripts/nclt_watch.py
