@@ -1,0 +1,6 @@
+.dev.vars
+.wrangler/
+node_modules/
+*.sql.bak
+matter-desk-backup-*.sql
+.DS_Store
