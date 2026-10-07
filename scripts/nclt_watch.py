@@ -24,9 +24,13 @@ CAUSE_PAGES = max(2, min(int(os.environ.get('NCLT_CAUSE_PAGES', '8')), 20))
 MAX_UNSCOPED_DOCS = max(20, min(int(os.environ.get('NCLT_MAX_UNSCOPED_DOCS', '60')), 120))
 
 IA_PATTERNS = [
-    re.compile(r'\bI\s*\.?\s*A\s*\.?\s*(?:\([^)]*\)\s*)*(?:NO\.?\s*)?[/\-]?\s*(\d{1,6})\s*(?:\([^)]*\)\s*)?(?:/|\bOF\b)\s*(\d{4})\b', re.I),
-    re.compile(r'\b(?:NEW\s+)?IA\s*[-/]?\s*(\d{1,6})\s*(?:/|\bOF\b)\s*(\d{4})\b', re.I),
+    re.compile(
+        r'\b(?:NEW\s+)?I\s*\.?\s*A\s*\.?\s*(?:\([^)]*\)\s*)*(?:NO\.?\s*)?[/\-]?\s*'
+        r'(\d{1,6})\s*(?:(?:\([^)]*\)\s*)+(?:/|\bOF\b)?|/|\bOF\b|\s+)\s*(\d{4})\b',
+        re.I,
+    ),
 ]
+
 
 BENCH_ALIASES = {
     'mumbai': ['mumbai'], 'kolkata': ['kolkata'], 'newdelhi': ['new delhi', 'principal bench'],
@@ -342,9 +346,9 @@ def api_post(session: requests.Session, path: str, payload: dict) -> dict:
 
 
 def self_test() -> None:
-    fixture = 'Item 16 C.P.(IB)922/MB/2022 NEW IA(I.B.C)/2984 (MB)2026 IA No.701/2025'
+    fixture = 'Item 16 C.P.(IB)922/MB/2022 NEW IA(I.B.C)/2984 (MB)2026 IA No.701/2025 IA (I.B.C) 1324 (MB)/2026 IA(IBC)(PLAN) 35(MB)/2026'
     got = extract_ia_labels(fixture)
-    assert 'IA 2984/2026' in got and 'IA 701/2025' in got
+    assert {'IA 2984/2026','IA 701/2025','IA 1324/2026','IA 35/2026'}.issubset(set(got))
     assert case_windows(fixture,'CP IB 922 of 2022')
     assert infer_bench_slug('C.P.(IB)/922(MB)/2022') == 'mumbai'
     assert identity_matches('C.P.(IB)/922(MB)/2022 Ruby Mills Private Limited',
