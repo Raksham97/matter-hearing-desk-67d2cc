@@ -617,7 +617,8 @@ def main() -> int:
                 )
                 matter_orders += int(orr.get('imported_orders') or 0)
             total_orders += matter_orders
-            print(f"  coverage={coverage} case={details['status']} cause-list={cause_scan['status']} linked manual IAs={result.get('linked_applications',0)} orders imported={matter_orders}")
+            matched_labels = [x.get('ia_number') for x in (cause_scan.get('apps') or []) if x.get('ia_number')]
+            print(f"  coverage={coverage} case={details['status']} cause-source={cause_scan['status']} exact-cause-IAs={result.get('linked_applications',0)} matched={matched_labels or 'none'} orders imported={matter_orders}")
         except Exception as e:
             ingest_failures += 1; hard_failures += 1; print(f'  ingest failed: {e}', file=sys.stderr)
         time.sleep(0.5)

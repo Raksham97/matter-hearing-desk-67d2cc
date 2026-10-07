@@ -34,9 +34,9 @@ export async function onRequestPost(context) {
       const useCause=Boolean(causeDate&&existing.next_hearing_date&&causeDate===existing.next_hearing_date&&causeUrl);
       await context.env.DB.prepare(`UPDATE applications SET
         last_seen_at=datetime('now'),
-        cause_list_url=CASE WHEN ?1=1 THEN ?2 ELSE NULL END,
-        vc_url=CASE WHEN ?1=1 THEN ?3 ELSE NULL END,
-        cause_list_date=CASE WHEN ?1=1 THEN ?4 ELSE NULL END,
+        cause_list_url=CASE WHEN ?1=1 THEN ?2 WHEN cause_list_date=next_hearing_date THEN cause_list_url ELSE NULL END,
+        vc_url=CASE WHEN ?1=1 THEN ?3 WHEN cause_list_date=next_hearing_date THEN vc_url ELSE NULL END,
+        cause_list_date=CASE WHEN ?1=1 THEN ?4 WHEN cause_list_date=next_hearing_date THEN cause_list_date ELSE NULL END,
         updated_at=datetime('now') WHERE id=?5`)
         .bind(useCause?1:0,causeUrl,vcUrl,causeDate,existing.id).run();
       if(useCause)linkedApplications++;
@@ -80,7 +80,7 @@ export async function onRequestPost(context) {
     const health=fullHealthy?'healthy':(anySourceOk?'limited':'failed');
     const syncStatus=health==='healthy'&&upstreamErrors.length===0?'success':(anySourceOk?'partial':'failed');
     const failures=anySourceOk?0:Number(matter.nclt_consecutive_failures||0)+1;
-    await context.env.DB.prepare(`UPDATE matters SET nclt_last_checked_at=datetime('now'),nclt_last_error=?1,nclt_next_listing_date=?2,nclt_coverage_level=?3,nclt_watch_health=?4,nclt_source_case_status=?5,nclt_source_cause_status=?6,nclt_last_successful_check_at=CASE WHEN ?7=1 THEN datetime('now') ELSE nclt_last_successful_check_at END,nclt_last_full_check_at=CASE WHEN ?8=1 THEN datetime('now') ELSE nclt_last_full_check_at END,nclt_consecutive_failures=?9,nclt_cause_list_url=CASE WHEN ?10=1 THEN ?11 ELSE NULL END,nclt_vc_url=CASE WHEN ?10=1 THEN ?12 ELSE NULL END,nclt_cause_list_date=CASE WHEN ?10=1 THEN ?13 ELSE NULL END,updated_at=datetime('now') WHERE id=?14`)
+    await context.env.DB.prepare(`UPDATE matters SET nclt_last_checked_at=datetime('now'),nclt_last_error=?1,nclt_next_listing_date=?2,nclt_coverage_level=?3,nclt_watch_health=?4,nclt_source_case_status=?5,nclt_source_cause_status=?6,nclt_last_successful_check_at=CASE WHEN ?7=1 THEN datetime('now') ELSE nclt_last_successful_check_at END,nclt_last_full_check_at=CASE WHEN ?8=1 THEN datetime('now') ELSE nclt_last_full_check_at END,nclt_consecutive_failures=?9,nclt_cause_list_url=CASE WHEN ?10=1 THEN ?11 WHEN nclt_cause_list_date=next_hearing_date THEN nclt_cause_list_url ELSE NULL END,nclt_vc_url=CASE WHEN ?10=1 THEN ?12 WHEN nclt_cause_list_date=next_hearing_date THEN nclt_vc_url ELSE NULL END,nclt_cause_list_date=CASE WHEN ?10=1 THEN ?13 WHEN nclt_cause_list_date=next_hearing_date THEN nclt_cause_list_date ELSE NULL END,updated_at=datetime('now') WHERE id=?14`)
       .bind(upstreamSummary,nextListing,coverage,health,caseStatus,causeStatus,anySourceOk?1:0,fullHealthy?1:0,failures,useCause?1:0,causeUrl,vcUrl,causeDate,matterId).run();
     await context.env.DB.prepare(`UPDATE nclt_sync_runs SET status=?1,finished_at=datetime('now'),new_applications=0,new_orders=?2,error_summary=?3,source_case_status=?4,source_cause_status=?5,coverage_level=?6,cause_docs_scanned=?7 WHERE id=?8`)
       .bind(syncStatus,importedOrders,upstreamSummary,caseStatus,causeStatus,coverage,docsScanned,runId).run();
