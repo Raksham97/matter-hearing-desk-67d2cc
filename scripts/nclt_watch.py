@@ -61,8 +61,17 @@ BENCH_CODES = [
 STOPWORDS = {'PRIVATE','LIMITED','LTD','PVT','LLP','COMPANY','INDIA','VERSUS','VS','AND','THE','OF','IN'}
 
 
+IA_KEY_RE = re.compile(
+    r'I\s*\.?\s*A\s*\.?[^0-9]{0,40}(\d{1,6})[^0-9]{0,40}(\d{4})\b',
+    re.I,
+)
+
 def norm_ia(value: str) -> str:
-    return re.sub(r'[^A-Z0-9]', '', (value or '').upper())
+    text = value or ''
+    m = IA_KEY_RE.search(text)
+    if m:
+        return f'IA{int(m.group(1))}{m.group(2)}'
+    return re.sub(r'[^A-Z0-9]', '', text.upper())
 
 
 def extract_ia_labels(text: str) -> list[str]:
@@ -366,11 +375,18 @@ def scan_cause_docs(session: requests.Session, cfg: dict, docs: list[dict], cach
             matches.append(match)
             for w in wins:
                 for label in extract_ia_labels(w):
+                    cause_date = doc.get('cause_date')
+                    known = {norm_ia(x.get('ia_number','')): x for x in (cfg.get('known_applications') or [])}
+                    prior = known.get(norm_ia(label)) or {}
+                    inferred_next = None
+                    if cause_date and cause_date >= date.today().isoformat() and not prior.get('next_hearing_date'):
+                        inferred_next = cause_date
                     apps.append({
                         'ia_number':label,'title':'Detected from NCLT cause list',
                         'notes':'Automatically detected when publicly listed by NCLT.',
                         'source_reference':url,'official_url':url,
-                        'cause_list_url':url,'vc_url':vc_url,'cause_list_date':doc.get('cause_date'),
+                        'cause_list_url':url,'vc_url':vc_url,'cause_list_date':cause_date,
+                        'next_hearing_date':inferred_next,
                     })
         except Exception as e:
             errors.append(f'cause-list document {url}: {type(e).__name__}: {e}')
@@ -379,11 +395,47 @@ def scan_cause_docs(session: requests.Session, cfg: dict, docs: list[dict], cach
             'detected_bench_slug':detected_slug,'matches':matches}
 
 def dedupe_apps(items: list[dict]) -> list[dict]:
-    out, seen = [], set()
-    for x in items:
+    """Merge duplicate IA detections instead of dropping later source metadata.
+
+    Case-history discovery is intentionally added before cause-list discovery. The
+    older implementation kept the first record and discarded the cause-list URL /
+    VC URL found later for the same IA. That meant an IA could be correctly detected
+    but never receive its dated access links.
+    """
+    out, by_key = [], {}
+    for raw in items:
+        x = dict(raw)
         key = norm_ia(x.get('ia_number',''))
-        if not key or key in seen: continue
-        seen.add(key); out.append(x)
+        if not key:
+            continue
+        if key not in by_key:
+            by_key[key] = x
+            out.append(x)
+            continue
+        cur = by_key[key]
+        for field in ('title','notes','source_reference','official_url','bench','next_hearing_notes'):
+            if not cur.get(field) and x.get(field):
+                cur[field] = x[field]
+        # Access metadata belongs to a dated cause-list document. Prefer the
+        # nearest upcoming cause list; otherwise retain the newest historical one.
+        xd = x.get('cause_list_date')
+        cd = cur.get('cause_list_date')
+        today = date.today().isoformat()
+        choose = False
+        if xd:
+            if not cd:
+                choose = True
+            elif xd >= today and cd < today:
+                choose = True
+            elif xd >= today and cd >= today and xd < cd:
+                choose = True
+            elif xd < today and cd < today and xd > cd:
+                choose = True
+        if choose:
+            for field in ('cause_list_url','vc_url','cause_list_date'):
+                cur[field] = x.get(field)
+        if not cur.get('next_hearing_date') and x.get('next_hearing_date'):
+            cur['next_hearing_date'] = x['next_hearing_date']
     return out
 
 
@@ -400,6 +452,7 @@ def api_post(session: requests.Session, path: str, payload: dict) -> dict:
 def self_test() -> None:
     fixture = 'Item 16 C.P.(IB)922/MB/2022 NEW IA(I.B.C)/2984 (MB)2026 IA No.701/2025 IA (I.B.C) 1324 (MB)/2026 IA(IBC)(PLAN) 35(MB)/2026'
     got = extract_ia_labels(fixture)
+    assert norm_ia('IA 2984 of 2026') == norm_ia('IA(I.B.C)/2984 (MB)2026') == norm_ia('IA 2984/2026')
     assert {'IA 2984/2026','IA 701/2025','IA 1324/2026','IA 35/2026'}.issubset(set(got))
     assert case_windows(fixture,'CP IB 922 of 2022')
     assert infer_bench_slug('C.P.(IB)/922(MB)/2022') == 'mumbai'
@@ -407,6 +460,11 @@ def self_test() -> None:
                             {'case_number':'CP IB 922 of 2022','cause_title':'Ruby Mills Private Limited'})
     assert extract_vc_url('Cisco WebEx VC Link https://ncltmum.webex.com/meet/ncltmum1', []) == 'https://ncltmum.webex.com/meet/ncltmum1'
     assert parse_iso_from_dmy('Cause List 09/10/2026 Mumbai Bench Court-I') == '2026-10-09'
+    merged = dedupe_apps([
+        {'ia_number':'IA 2984/2026','official_url':'case-history'},
+        {'ia_number':'IA 2984 of 2026','cause_list_url':'cause.pdf','vc_url':'https://example.webex.com/meet/x','cause_list_date':'2099-10-09'},
+    ])
+    assert len(merged) == 1 and merged[0].get('cause_list_url') == 'cause.pdf' and merged[0].get('vc_url')
     print('NCLT watcher reliability self-test passed')
 
 
@@ -439,7 +497,7 @@ def main() -> int:
         preferred_dates = {d for d in (m.get('next_hearing_date'), m.get('nclt_next_listing_date')) if d}
         cause_matches = cause_scan.get('matches') or []
         exact_matches = [x for x in cause_matches if x.get('cause_list_date') in preferred_dates]
-        cause_match = (exact_matches or cause_matches or [None])[0]
+        cause_match = (exact_matches or [None])[0]
         payload = {
             'matter_id':m['id'], 'source_url':details['url'] or CAUSE_LIST,
             'applications':all_apps, 'orders':details['orders'], 'next_listing_date':details['next_listing'],

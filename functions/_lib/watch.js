@@ -1,7 +1,10 @@
 import { json } from './http.js';
 
 export function normalizeIa(value) {
-  return String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const text=String(value||'');
+  const m=text.match(/I\s*\.?\s*A\s*\.?[^0-9]{0,40}(\d{1,6})[^0-9]{0,40}(\d{4})\b/i);
+  if(m)return `IA${Number(m[1])}${m[2]}`;
+  return text.toUpperCase().replace(/[^A-Z0-9]/g,'');
 }
 
 export function requireWatch(context) {

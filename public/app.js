@@ -40,7 +40,7 @@ function renderDashboard(j){
     const appN=alerts.new_applications.length,ordN=alerts.new_orders.length;
     const names=[...new Set([...alerts.new_applications,...alerts.new_orders].map(x=>x.short_name||x.cause_title))].slice(0,4);
     alertBox.classList.remove('hidden');
-    alertBox.innerHTML=`<div><strong>Action needed</strong><br><span>${appN} new IA/application${appN===1?'':'s'} · ${ordN} new order${ordN===1?'':'s'}${names.length?` · ${names.map(esc).join(', ')}`:''}</span></div><button class="secondary mini" id="reviewAllNclt">Mark reviewed</button>`;
+    alertBox.innerHTML=`<div><strong>Action needed</strong><br><span>${appN} IA detection${appN===1?'':'s'} · ${ordN} order update${ordN===1?'':'s'}${names.length?` · ${names.map(esc).join(', ')}`:''}</span></div><button class="secondary mini" id="reviewAllNclt">Mark reviewed</button>`;
     $('#reviewAllNclt').onclick=async()=>{if(!confirm('Mark all current NCLT alerts as reviewed?'))return;await api('/api/nclt/review',{method:'POST',body:'{}'});await loadDashboard();};
   }else{alertBox.classList.add('hidden');alertBox.innerHTML='';}
 
@@ -56,7 +56,7 @@ function renderDashboard(j){
   }).join('')||'<div class="empty-card">No hearings in the next 7 days.</div>';
 
   $('#mattersGrid').innerHTML=j.matters.map(m=>{const ws=watchState(m),next=nextForMatter(m),nnew=Number(m.new_application_count||0)+Number(m.new_order_count||0);return `<article class="matter-card matter-open" data-id="${m.id}">
-    <div class="matter-card-top"><div><h3>${esc(m.short_name||m.cause_title)}</h3><div class="muted">${esc(m.case_number||m.cause_title)}</div></div><div>${nnew?`<span class="newbadge">${nnew} NEW</span>`:ws.key!=='full'&&ws.key!=='na'?`<span class="watch-badge ${ws.cls}">${ws.label}</span>`:''}</div></div>
+    <div class="matter-card-top"><div><h3>${esc(m.short_name||m.cause_title)}</h3><div class="muted">${esc(m.case_number||m.cause_title)}</div></div><div>${nnew?`<span class="newbadge">${nnew} UPDATE${nnew===1?'':'S'}</span>`:ws.key!=='full'&&ws.key!=='na'?`<span class="watch-badge ${ws.cls}">${ws.label}</span>`:''}</div></div>
     <div class="matter-meta"><span>${esc(m.bench||m.forum||'—')}</span><span>•</span><span class="${m.status==='Active'?'active':'archived'}">${esc(m.status)}</span></div>
     <div class="matter-bottom"><div class="matter-metric"><span>Open IAs</span><b>${Number(m.open_application_count||0)}</b></div><div class="matter-metric"><span>Next hearing</span><b>${fmtDate(next)}</b></div><div class="matter-metric"><span>NCLT</span><b>${ws.key==='full'?'Synced':ws.label}</b></div></div>
   </article>`;}).join('')||'<div class="empty-card">No matters yet. Add the first matter.</div>';

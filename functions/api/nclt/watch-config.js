@@ -12,11 +12,12 @@ export async function onRequestGet(context) {
   const out=[];
   for (const m of matters.results) {
     const [apps,orders] = await Promise.all([
-      context.env.DB.prepare('SELECT ia_number FROM applications WHERE matter_id=?1').bind(m.id).all(),
+      context.env.DB.prepare('SELECT ia_number,next_hearing_date,cause_list_date FROM applications WHERE matter_id=?1').bind(m.id).all(),
       context.env.DB.prepare('SELECT source_url FROM nclt_orders WHERE matter_id=?1').bind(m.id).all(),
     ]);
     out.push({...m,
       known_ia_numbers:apps.results.map(x=>x.ia_number),
+      known_applications:apps.results,
       known_order_urls:orders.results.map(x=>x.source_url)});
   }
   return json({matters:out});
