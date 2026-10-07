@@ -31,6 +31,9 @@ IA_PATTERNS = [
     ),
 ]
 
+URL_RE = re.compile(r'https?://[^\s<>()\]\[\"\']+', re.I)
+VC_HINTS = ('webex.com', 'teams.microsoft.com', 'meet.google.com', 'zoom.us')
+
 
 BENCH_ALIASES = {
     'mumbai': ['mumbai'], 'kolkata': ['kolkata'], 'newdelhi': ['new delhi', 'principal bench'],
@@ -101,20 +104,59 @@ def request_with_retry(session: requests.Session, url: str, *, params=None, time
     raise last
 
 
-def pdf_or_html_text(resp: requests.Response, max_pdf_pages: int = 15) -> str:
+def pdf_or_html_payload(resp: requests.Response, max_pdf_pages: int = 15) -> dict:
     content = resp.content
     ctype = (resp.headers.get('content-type') or '').lower()
+    links: list[str] = []
+    text = ''
     if content.startswith(b'%PDF') or 'application/pdf' in ctype:
         try:
             reader = PdfReader(io.BytesIO(content))
-            return '\n'.join((p.extract_text() or '') for p in reader.pages[:max_pdf_pages])
+            parts = []
+            for page in reader.pages[:max_pdf_pages]:
+                parts.append(page.extract_text() or '')
+                try:
+                    annots = page.get('/Annots') or []
+                    for ref in annots:
+                        obj = ref.get_object()
+                        action = obj.get('/A') if obj else None
+                        uri = action.get('/URI') if action else None
+                        if uri:
+                            links.append(str(uri))
+                except Exception:
+                    pass
+            text = '\n'.join(parts)
         except Exception:
-            return ''
-    try:
-        return BeautifulSoup(resp.text, 'html.parser').get_text(' ', strip=True)
-    except Exception:
-        return ''
+            text = ''
+    else:
+        try:
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            text = soup.get_text(' ', strip=True)
+            links.extend(a.get('href') for a in soup.find_all('a', href=True))
+        except Exception:
+            text = ''
+    links.extend(URL_RE.findall(text or ''))
+    clean_links, seen = [], set()
+    for url in links:
+        url = (url or '').strip().rstrip('.,;:)')
+        if not url or url in seen:
+            continue
+        seen.add(url); clean_links.append(url)
+    return {'text': text, 'links': clean_links}
 
+
+def pdf_or_html_text(resp: requests.Response, max_pdf_pages: int = 15) -> str:
+    return pdf_or_html_payload(resp, max_pdf_pages=max_pdf_pages)['text']
+
+
+def extract_vc_url(text: str, links: list[str] | None = None) -> str | None:
+    candidates = list(links or []) + URL_RE.findall(text or '')
+    for url in candidates:
+        low = (url or '').lower()
+        if any(h in low for h in VC_HINTS):
+            return url.strip().rstrip('.,;:)')
+    m = re.search(r'VC\s*Link\s*[:\-]?\s*(https?://\S+)', text or '', re.I)
+    return m.group(1).rstrip('.,;:)') if m else None
 
 def matter_case_signature(case_number: str) -> tuple[str | None, str | None]:
     s = case_number or ''
@@ -280,7 +322,7 @@ def discover_cause_docs(session: requests.Session) -> dict:
                         continue
                     if full in seen:
                         continue
-                    seen.add(full); docs.append({'url':full,'row_text':row_text}); page_docs += 1
+                    seen.add(full); docs.append({'url':full,'row_text':row_text,'cause_date':parse_iso_from_dmy(row_text)}); page_docs += 1
             if page_docs:
                 successful_pages += 1
         except Exception as e:
@@ -291,13 +333,13 @@ def discover_cause_docs(session: requests.Session) -> dict:
     return {'docs':docs,'errors':errors,'status':status,'successful_pages':successful_pages}
 
 
-def scan_cause_docs(session: requests.Session, cfg: dict, docs: list[dict], cache: dict[str,str]) -> dict:
-    apps, errors = [], []
+def scan_cause_docs(session: requests.Session, cfg: dict, docs: list[dict], cache: dict[str,dict]) -> dict:
+    apps, errors, matches = [], [], []
     slug = (cfg.get('nclt_bench_slug') or infer_bench_slug(cfg.get('case_number') or '') or '').strip().lower()
     case_number = cfg.get('case_number') or ''
     if not case_number:
         return {'apps':apps,'errors':['main case number missing; cause-list matching unavailable'],
-                'status':'unconfigured','docs_scanned':0,'detected_bench_slug':None}
+                'status':'unconfigured','docs_scanned':0,'detected_bench_slug':None,'matches':[]}
     relevant = [d for d in docs if bench_matches(d.get('row_text',''), slug)] if slug else list(docs)
     if not slug:
         relevant = relevant[:MAX_UNSCOPED_DOCS]
@@ -307,24 +349,34 @@ def scan_cause_docs(session: requests.Session, cfg: dict, docs: list[dict], cach
         try:
             if url not in cache:
                 rr = request_with_retry(session, url, timeout=35)
-                cache[url] = pdf_or_html_text(rr, max_pdf_pages=50)
-            text = cache[url]; docs_scanned += 1
+                cache[url] = pdf_or_html_payload(rr, max_pdf_pages=50)
+            payload = cache[url]; text = payload['text']; docs_scanned += 1
             wins = case_windows(text, case_number)
-            if wins and not detected_slug:
+            if not wins:
+                continue
+            if not detected_slug:
                 detected_slug = bench_slug_from_row(doc.get('row_text',''))
+            vc_url = extract_vc_url(text, payload.get('links'))
+            match = {
+                'cause_list_url': url,
+                'vc_url': vc_url,
+                'cause_list_date': doc.get('cause_date'),
+                'row_text': doc.get('row_text',''),
+            }
+            matches.append(match)
             for w in wins:
                 for label in extract_ia_labels(w):
                     apps.append({
                         'ia_number':label,'title':'Detected from NCLT cause list',
                         'notes':'Automatically detected when publicly listed by NCLT.',
                         'source_reference':url,'official_url':url,
+                        'cause_list_url':url,'vc_url':vc_url,'cause_list_date':doc.get('cause_date'),
                     })
         except Exception as e:
             errors.append(f'cause-list document {url}: {type(e).__name__}: {e}')
     status = 'success' if docs_scanned > 0 else 'failed'
     return {'apps':apps,'errors':errors,'status':status,'docs_scanned':docs_scanned,
-            'detected_bench_slug':detected_slug}
-
+            'detected_bench_slug':detected_slug,'matches':matches}
 
 def dedupe_apps(items: list[dict]) -> list[dict]:
     out, seen = [], set()
@@ -353,6 +405,8 @@ def self_test() -> None:
     assert infer_bench_slug('C.P.(IB)/922(MB)/2022') == 'mumbai'
     assert identity_matches('C.P.(IB)/922(MB)/2022 Ruby Mills Private Limited',
                             {'case_number':'CP IB 922 of 2022','cause_title':'Ruby Mills Private Limited'})
+    assert extract_vc_url('Cisco WebEx VC Link https://ncltmum.webex.com/meet/ncltmum1', []) == 'https://ncltmum.webex.com/meet/ncltmum1'
+    assert parse_iso_from_dmy('Cause List 09/10/2026 Mumbai Bench Court-I') == '2026-10-09'
     print('NCLT watcher reliability self-test passed')
 
 
@@ -365,7 +419,7 @@ def main() -> int:
     cfg = api_get(session,'/api/nclt/watch-config'); matters = cfg.get('matters') or []
     if not matters:
         print('No active NCLT matters currently require watch.'); return 0
-    cause = discover_cause_docs(session); cause_cache: dict[str,str] = {}
+    cause = discover_cause_docs(session); cause_cache: dict[str,dict] = {}
     total_apps = total_orders = ingest_failures = degraded = hard_failures = 0
     if cause['status'] != 'success':
         hard_failures += 1
@@ -373,7 +427,7 @@ def main() -> int:
         print(f"Checking matter {m['id']}: {m.get('short_name') or m.get('cause_title')}")
         details = fetch_details(session,m)
         cause_scan = scan_cause_docs(session,m,cause['docs'],cause_cache) if cause['status']=='success' else {
-            'apps':[],'errors':['cause-list discovery failed'],'status':'failed','docs_scanned':0,'detected_bench_slug':None}
+            'apps':[],'errors':['cause-list discovery failed'],'status':'failed','docs_scanned':0,'detected_bench_slug':None,'matches':[]}
         all_apps = dedupe_apps(details['apps'] + cause_scan['apps'])
         errors = list(cause.get('errors') or []) + list(details['errors']) + list(cause_scan['errors'])
         has_exact_config = bool((m.get('nclt_filing_no') or '').strip() and ((m.get('nclt_bench_slug') or '').strip() or infer_bench_slug(m.get('case_number') or '')))
@@ -382,10 +436,15 @@ def main() -> int:
             hard_failures += 1
         if details['status'] not in {'success','unconfigured'} or cause_scan['status'] != 'success':
             degraded += 1
+        preferred_dates = {d for d in (m.get('next_hearing_date'), m.get('nclt_next_listing_date')) if d}
+        cause_matches = cause_scan.get('matches') or []
+        exact_matches = [x for x in cause_matches if x.get('cause_list_date') in preferred_dates]
+        cause_match = (exact_matches or cause_matches or [None])[0]
         payload = {
             'matter_id':m['id'], 'source_url':details['url'] or CAUSE_LIST,
             'applications':all_apps, 'orders':details['orders'], 'next_listing_date':details['next_listing'],
             'errors':errors[:30], 'detected_bench_slug':cause_scan.get('detected_bench_slug'),
+            'cause_list':cause_match,
             'source_health':{
                 'case_status':details['status'], 'cause_list':cause_scan['status'],
                 'identity_verified':details['identity_verified'], 'coverage_level':coverage,

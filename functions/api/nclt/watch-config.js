@@ -4,7 +4,7 @@ import { requireWatch } from '../../_lib/watch.js';
 export async function onRequestGet(context) {
   const denied = requireWatch(context); if (denied) return denied;
   const matters = await context.env.DB.prepare(`
-    SELECT id,cause_title,short_name,bench,case_number,nclt_filing_no,nclt_bench_slug,
+    SELECT id,cause_title,short_name,bench,case_number,next_hearing_date,nclt_filing_no,nclt_bench_slug,
            nclt_last_checked_at,nclt_next_listing_date
     FROM matters WHERE status='Active' AND nclt_watch_enabled=1
     ORDER BY id ASC

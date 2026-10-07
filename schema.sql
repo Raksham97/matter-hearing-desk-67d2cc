@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS matters (
   nclt_last_successful_check_at TEXT,
   nclt_last_full_check_at TEXT,
   nclt_consecutive_failures INTEGER NOT NULL DEFAULT 0,
+  nclt_cause_list_url TEXT,
+  nclt_vc_url TEXT,
+  nclt_cause_list_date TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -65,6 +68,9 @@ CREATE TABLE IF NOT EXISTS applications (
   detected_at TEXT,
   is_new INTEGER NOT NULL DEFAULT 0,
   last_seen_at TEXT,
+  cause_list_url TEXT,
+  vc_url TEXT,
+  cause_list_date TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (matter_id) REFERENCES matters(id) ON DELETE CASCADE
