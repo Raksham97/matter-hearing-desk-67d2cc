@@ -32,6 +32,16 @@ function accessButtons(x){if(!exactCauseAccess(x))return `<span class="pending-l
 function nextForMatter(m){const ds=[m.application_next_hearing,m.next_hearing_date].map(canonicalDate).filter(x=>x&&daysUntil(x)!==null&&daysUntil(x)>=0).sort();return ds[0]||null;}
 function hasPastDate(m){return [m.application_next_hearing,m.next_hearing_date].map(canonicalDate).some(x=>x&&daysUntil(x)!==null&&daysUntil(x)<0);}
 function matterNextLabel(m){const n=nextForMatter(m);return n?fmtDate(n):(hasPastDate(m)?'Past date — update needed':'—');}
+function compactIaRefs(value){
+  const parts=String(value||'').split(/\s*[·,]\s*/).map(x=>x.trim()).filter(Boolean);
+  if(!parts.length)return '';
+  const shown=parts.slice(0,2).join(' · ');
+  return parts.length>2?`${shown} · +${parts.length-2} more`:shown;
+}
+function activateMatterTab(name){
+  $$('.matter-tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));
+  $$('.matter-tab-panel').forEach(p=>p.classList.toggle('hidden',p.dataset.panel!==name));
+}
 
 async function loadDashboard(){const j=await api(`/api/dashboard?today=${today()}`);state.dashboard=j;renderDashboard(j);}
 function renderDashboard(j){
@@ -52,7 +62,7 @@ function renderDashboard(j){
   }).join('')||'<div class="empty-card">No hearings entered for the next 7 days.</div>';
 
   $('#recentOrders').innerHTML=(j.recent_orders||[]).map(o=>`<article class="dashboard-order">
-    <div class="dashboard-order-main"><a class="matter-name matter-open" data-id="${o.matter_id}" href="#">${esc(o.short_name||o.cause_title)}</a><div class="dashboard-order-title">${esc(o.title||o.order_type||'NCLT order')}</div><div class="dashboard-order-meta">${fmtDate(o.order_date)}${o.ia_numbers?` · ${esc(o.ia_numbers)}`:''}</div></div>
+    <div class="dashboard-order-main"><a class="matter-name matter-open" data-id="${o.matter_id}" href="#">${esc(o.short_name||o.cause_title)}</a><div class="dashboard-order-title">${esc(o.title||o.order_type||'NCLT order')}</div><div class="dashboard-order-meta">${fmtDate(o.order_date)}${o.ia_numbers?` · ${esc(compactIaRefs(o.ia_numbers))}`:''}</div></div>
     <a class="access-btn" href="${esc(o.source_url)}" target="_blank" rel="noopener">Open order</a>
   </article>`).join('')||'<div class="empty-card">No NCLT orders imported yet.</div>';
 
@@ -107,22 +117,46 @@ async function openMatter(id){
   const futureNextDates=allNextDates.filter(d=>daysUntil(d)!==null&&daysUntil(d)>=0).sort();
   const next=futureNextDates[0]||null;
   const pastOnly=!next&&allNextDates.some(d=>daysUntil(d)!==null&&daysUntil(d)<0);
+
   const appRows=apps.map(a=>{const exact=a.cause_list_date&&a.next_hearing_date&&a.cause_list_date===a.next_hearing_date&&a.cause_list_url;return `<tr><td><b>${esc(a.ia_number)}</b>${a.title?`<br><span class="muted">${esc(a.title)}</span>`:''}</td><td class="${['Disposed','Allowed','Dismissed','Withdrawn','Closed'].includes(a.status)?'archived':'active'}">${esc(a.status)}</td><td>${fmtDate(a.next_hearing_date)}</td><td>${esc(a.next_hearing_notes||'—')}</td><td>${exact?`<a class="access-btn" href="${esc(a.cause_list_url)}" target="_blank" rel="noopener">Cause list</a> ${a.vc_url?`<a class="access-btn vc" href="${esc(a.vc_url)}" target="_blank" rel="noopener">VC</a>`:''}`:'<span class="muted">—</span>'}</td><td class="nowrap"><button class="mini secondary edit-app" data-id="${a.id}">Edit</button> <button class="mini danger delete-app" data-id="${a.id}">Delete</button></td></tr>`;}).join('');
-  const hist=j.hearings.map(h=>`<div class="hearing"><div class="meta"><strong>${fmtDate(h.hearing_date)}</strong><span class="pill">${esc(h.application_numbers||h.ia_number||'Main matter')}</span>${h.bench?`<span class="muted">${esc(h.bench)}</span>`:''}</div>${h.outcome?`<div><b>Outcome:</b> ${esc(h.outcome)}</div>`:''}${h.notes?`<div class="muted">${esc(h.notes)}</div>`:''}${h.next_hearing_date?`<div><b>Next:</b> ${fmtDate(h.next_hearing_date)}${h.next_hearing_notes?' · '+esc(h.next_hearing_notes):''}</div>`:''}${h.order_url?`<div><a class="link" target="_blank" rel="noopener" href="${esc(h.order_url)}">Open order</a></div>`:''}<div class="hearing-actions"><button class="mini secondary edit-hearing" data-id="${h.id}">Edit</button> <button class="mini danger delete-hearing" data-id="${h.id}">Delete</button></div></div>`).join('');
-  const orderRows=orders.map(o=>`<div class="order-card"><div class="order-meta"><strong>${fmtDate(o.order_date)}</strong><span class="pill">${esc(o.application_numbers||o.ia_numbers||'Main / unallocated')}</span></div><div>${esc(o.title||o.order_type||'NCLT order')}</div><a class="link" href="${esc(o.source_url)}" target="_blank" rel="noopener">Open official order</a></div>`).join('');
+
+  const hearingCard=h=>`<div class="hearing compact-hearing"><div class="meta"><strong>${fmtDate(h.hearing_date)}</strong><span class="pill">${esc(h.application_numbers||h.ia_number||'Main matter')}</span>${h.bench?`<span class="muted">${esc(h.bench)}</span>`:''}</div>${h.outcome?`<div class="hearing-line"><b>Outcome:</b> ${esc(h.outcome)}</div>`:''}${h.notes?`<div class="hearing-line muted">${esc(h.notes)}</div>`:''}${h.next_hearing_date?`<div class="hearing-line"><b>Next:</b> ${fmtDate(h.next_hearing_date)}${h.next_hearing_notes?' · '+esc(h.next_hearing_notes):''}</div>`:''}${h.order_url?`<div class="hearing-line"><a class="link" target="_blank" rel="noopener" href="${esc(h.order_url)}">Open order</a></div>`:''}<div class="hearing-actions"><button class="mini secondary edit-hearing" data-id="${h.id}">Edit</button> <button class="mini danger delete-hearing" data-id="${h.id}">Delete</button></div></div>`;
+  const recentHearings=j.hearings.slice(0,5).map(hearingCard).join('');
+  const olderHearings=j.hearings.slice(5).map(hearingCard).join('');
+
+  const orderRows=orders.map(o=>{const refs=compactIaRefs(o.application_numbers||o.ia_numbers||'');return `<div class="order-row"><div class="order-row-date">${fmtDate(o.order_date)}</div><div class="order-row-main"><b>${esc(o.title||o.order_type||'NCLT order')}</b>${refs?`<div class="muted order-refs">${esc(refs)}</div>`:''}</div><a class="access-btn" href="${esc(o.source_url)}" target="_blank" rel="noopener">Open</a></div>`;}).join('');
+
   openModal(`<div class="modal-head"><div><h2 class="matter-title">${esc(m.short_name||m.cause_title)}</h2><div class="case-subtitle">${esc(m.case_number||m.cause_title)}</div></div><button class="secondary" id="closeMatter">Close</button></div>
   <div class="matter-toolbar"><button class="primary" id="addHearing">+ Log hearing</button><button class="secondary" id="addApplication">+ Add IA</button><button class="secondary" id="editMatter">Edit matter</button></div>
   <div class="summary-chips"><span class="summary-chip">${esc(m.bench||m.forum||'—')}</span><span class="summary-chip">${openApps.length} open IA${openApps.length===1?'':'s'}</span><span class="summary-chip">${next?`Next: ${fmtDate(next)}`:(pastOnly?'Past date — update needed':'Next: —')}</span><span class="summary-chip ${m.status==='Active'?'active':''}">${esc(m.status)}</span></div>
 
-  <section class="matter-section orders-prominent"><h3>NCLT orders (${orders.length})</h3><div style="margin-top:9px">${orderRows||'<div class="empty">No NCLT orders imported yet.</div>'}</div></section>
+  <nav class="matter-tabs" aria-label="Matter sections">
+    <button class="matter-tab active" data-tab="hearings">Last 5 hearing notes</button>
+    <button class="matter-tab" data-tab="ias">IAs (${apps.length})</button>
+    <button class="matter-tab" data-tab="orders">Orders (${orders.length})</button>
+  </nav>
 
-  <section class="matter-section"><h3>IAs / applications (${apps.length})</h3><div class="tablewrap" style="margin-top:9px"><table><thead><tr><th>IA / application</th><th>Status</th><th>Next</th><th>Prep</th><th>Access</th><th></th></tr></thead><tbody>${appRows||'<tr><td colspan="6" class="empty">No IAs yet. Use “+ Add IA”.</td></tr>'}</tbody></table></div></section>
+  <section class="matter-tab-panel" data-panel="hearings">
+    <div class="tab-panel-head"><h3>Last 5 hearing notes</h3><span class="muted">Most recent first</span></div>
+    <div class="timeline">${recentHearings||'<div class="empty">No hearings logged yet.</div>'}</div>
+    ${olderHearings?`<details class="collapsible compact"><summary>Older hearing history (${Math.max(0,j.hearings.length-5)})</summary><div class="collapsible-body timeline">${olderHearings}</div></details>`:''}
+  </section>
 
-  <details class="collapsible"><summary>Hearing history (${j.hearings.length})</summary><div class="collapsible-body timeline">${hist||'<div class="empty">No hearings logged yet.</div>'}</div></details>
+  <section class="matter-tab-panel hidden" data-panel="ias">
+    <div class="tab-panel-head"><h3>IAs / applications (${apps.length})</h3></div>
+    <div class="tablewrap"><table><thead><tr><th>IA / application</th><th>Status</th><th>Next</th><th>Prep</th><th>Access</th><th></th></tr></thead><tbody>${appRows||'<tr><td colspan="6" class="empty">No IAs yet. Use “+ Add IA”.</td></tr>'}</tbody></table></div>
+  </section>
+
+  <section class="matter-tab-panel hidden" data-panel="orders">
+    <div class="tab-panel-head"><h3>NCLT orders (${orders.length})</h3><span class="muted">Official links</span></div>
+    <div class="compact-order-list">${orderRows||'<div class="empty">No NCLT orders imported yet.</div>'}</div>
+  </section>
+
   <details class="collapsible"><summary>Matter details</summary><div class="collapsible-body kv"><b>Full cause title</b><span>${esc(m.cause_title)}</span><b>Forum</b><span>${esc(m.forum||'—')}</span><b>Bench</b><span>${esc(m.bench||'—')}</span><b>Client / role</b><span>${esc(m.client_role||'—')}</span><b>General notes</b><span>${esc(m.notes||'—')}</span>${m.official_case_url?`<b>Official link</b><span><a class="link" href="${esc(m.official_case_url)}" target="_blank" rel="noopener">Open</a></span>`:''}${caseUrl?`<b>NCLT case history</b><span><a class="link" href="${esc(caseUrl)}" target="_blank" rel="noopener">Open official case history</a></span>`:''}</div></details>
   <details class="collapsible"><summary>More actions</summary><div class="collapsible-body"><button class="danger" id="deleteMatter">Delete broader matter</button></div></details>`);
 
   $('#closeMatter').onclick=closeModal;
+  $$('.matter-tab').forEach(b=>b.onclick=()=>activateMatterTab(b.dataset.tab));
   $('#editMatter').onclick=()=>{openModal(matterForm(m));bindMatterForm(m);};
   $('#addApplication').onclick=()=>{openModal(applicationForm(m));bindApplicationForm(m);};
   $('#addHearing').onclick=()=>{openModal(hearingForm(m,apps));bindHearingForm(m,apps);};
@@ -132,6 +166,7 @@ async function openMatter(id){
   $$('.edit-hearing').forEach(b=>b.onclick=()=>{const h=j.hearings.find(x=>x.id===Number(b.dataset.id));openModal(hearingForm(m,apps,h));bindHearingForm(m,apps,h);});
   $$('.delete-hearing').forEach(b=>b.onclick=async()=>{if(!confirm('Delete this hearing entry?'))return;await api(`/api/hearings/${b.dataset.id}`,{method:'DELETE'});await loadDashboard();await openMatter(id);});
 }
+
 async function exportData(kind){const d=await api('/api/export-data');if(kind==='json'){const blob=new Blob([JSON.stringify(d,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='matter-desk-backup.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}else{MatterDeskXLSX.downloadWorkbook(d);}}
 async function init(){const s=await api('/api/session').catch(()=>({authenticated:false}));if(s.authenticated)await loadDashboard();else showLogin();}
 

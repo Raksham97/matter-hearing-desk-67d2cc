@@ -16,7 +16,7 @@ export async function onRequestGet(context){
       (SELECT COUNT(*) FROM nclt_orders no WHERE no.matter_id=m.id) AS order_count
       FROM matters m ORDER BY CASE m.status WHEN 'Active' THEN 0 ELSE 1 END,m.cause_title ASC`).bind(today).all(),
     context.env.DB.prepare(`SELECT h.id,h.matter_id,h.hearing_date,h.outcome,m.cause_title,COALESCE(GROUP_CONCAT(CASE WHEN upper(COALESCE(a.source,'manual'))!='NCLT' THEN a.ia_number END,' · '),h.ia_number) AS application_numbers FROM hearings h JOIN matters m ON m.id=h.matter_id LEFT JOIN hearing_applications ha ON ha.hearing_id=h.id LEFT JOIN applications a ON a.id=ha.application_id GROUP BY h.id ORDER BY h.hearing_date DESC,h.id DESC LIMIT 12`).all(),
-    context.env.DB.prepare(`SELECT no.id,no.matter_id,no.order_date,no.title,no.order_type,no.source_url,no.ia_numbers,m.cause_title,m.short_name FROM nclt_orders no JOIN matters m ON m.id=no.matter_id ORDER BY COALESCE(no.order_date,no.discovered_at) DESC,no.id DESC LIMIT 10`).all(),
+    context.env.DB.prepare(`SELECT no.id,no.matter_id,no.order_date,no.title,no.order_type,no.source_url,no.ia_numbers,m.cause_title,m.short_name FROM nclt_orders no JOIN matters m ON m.id=no.matter_id ORDER BY COALESCE(no.order_date,no.discovered_at) DESC,no.id DESC LIMIT 4`).all(),
     context.env.DB.prepare(`SELECT COUNT(*) AS n FROM nclt_orders`).first(),
   ]);
   const upcoming=[...upcomingApps.results,...upcomingMain.results].sort((a,b)=>(a.next_hearing_date||'').localeCompare(b.next_hearing_date||'')||a.cause_title.localeCompare(b.cause_title));
