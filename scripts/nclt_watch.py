@@ -261,6 +261,49 @@ def bench_slug_from_row(row_text: str) -> str | None:
     return None
 
 
+ORDER_LINK_HINTS = ('/nclt/public/order_view.php', 'order_view.php', 'ordersview.drt')
+
+
+def is_order_href(href: str | None) -> bool:
+    low = (href or '').lower()
+    return any(h in low for h in ORDER_LINK_HINTS)
+
+
+def extract_order_candidates(soup: BeautifulSoup, base_url: str) -> list[dict]:
+    """Extract official NCLT order links from Case History proceeding rows.
+
+    NCLT currently exposes proceeding orders through `nclt/public/order_view.php?path=...`.
+    Older pages can still use `ordersview.drt`. PDF fetching remains optional so a
+    transient order-document failure never hides a visible official order link.
+    """
+    seen_urls: set[str] = set()
+    candidates: list[dict] = []
+    for tr in soup.find_all('tr'):
+        row_text = ' '.join(tr.stripped_strings)
+        row_date = parse_iso_from_dmy(row_text)
+        row_ias = extract_ia_labels(row_text)
+        for a in tr.find_all('a'):
+            href = a.get('href') or ''
+            if not is_order_href(href):
+                onclick = a.get('onclick') or ''
+                m = re.search(r"[\"']([^\"']*(?:order_view\.php|ordersview\.drt)[^\"']*)[\"']", onclick, re.I)
+                href = m.group(1) if m else ''
+            if not is_order_href(href):
+                continue
+            order_url = urljoin(base_url, href)
+            if order_url in seen_urls:
+                continue
+            seen_urls.add(order_url)
+            candidates.append({
+                'order_date': row_date,
+                'row_text': row_text,
+                'row_ias': row_ias,
+                'source_url': order_url,
+                'title': ' '.join(a.stripped_strings) or 'NCLT Order',
+            })
+    return candidates
+
+
 def fetch_details(session: requests.Session, cfg: dict) -> dict:
     filing = (cfg.get('nclt_filing_no') or '').strip()
     slug = (cfg.get('nclt_bench_slug') or infer_bench_slug(cfg.get('case_number') or '') or '').strip().lower()
@@ -297,21 +340,7 @@ def fetch_details(session: requests.Session, cfg: dict) -> dict:
     # is only used to improve IA labels for the newest unseen orders; it is never a
     # prerequisite for displaying the official order link.
     known_urls = set(cfg.get('known_order_urls') or [])
-    seen_urls = set(); candidates = []
-    for tr in soup.find_all('tr'):
-        links = [a for a in tr.find_all('a', href=True) if 'ordersview.drt' in (a.get('href') or '')]
-        if not links:
-            continue
-        row_text = ' '.join(tr.stripped_strings)
-        row_date = parse_iso_from_dmy(row_text)
-        row_ias = extract_ia_labels(row_text)
-        for a in links:
-            order_url = urljoin(url, a.get('href'))
-            if order_url in seen_urls:
-                continue
-            seen_urls.add(order_url)
-            candidates.append({'order_date':row_date,'row_text':row_text,'row_ias':row_ias,
-                               'source_url':order_url,'title':' '.join(a.stripped_strings) or 'NCLT Order'})
+    candidates = extract_order_candidates(soup, url)
 
     unknown = [x for x in candidates if x['source_url'] not in known_urls]
     unknown.sort(key=lambda x: (x.get('order_date') or '', x['source_url']), reverse=True)
@@ -497,6 +526,13 @@ def self_test() -> None:
     assert identity_matches('C.P.(IB)/922(MB)/2022 Ruby Mills Private Limited',cfg)
     assert extract_vc_url('Cisco WebEx VC Link https://ncltmum.webex.com/meet/ncltmum1', []) == 'https://ncltmum.webex.com/meet/ncltmum1'
     assert parse_iso_from_dmy('Cause List 09/10/2026 Mumbai Bench Court-I') == '2026-10-09'
+    current_html = '<table><tr><td>1</td><td>1</td><td>08/07/2026</td><td>P</td><td><a href="/nclt/public/order_view.php?path=abc%3D%3D">Interim Order</a></td></tr></table>'
+    legacy_html = '<table><tr><td>1</td><td>1</td><td>07/07/2026</td><td>P</td><td><a href="../../ordersview.drt?path=xyz">Interim Order</a></td></tr></table>'
+    current_orders = extract_order_candidates(BeautifulSoup(current_html,'html.parser'),'https://efiling.nclt.gov.in/nclt/public/details.php?filing_no=x')
+    legacy_orders = extract_order_candidates(BeautifulSoup(legacy_html,'html.parser'),'https://efiling.nclt.gov.in/nclt/public/details.php?filing_no=x')
+    assert len(current_orders) == 1 and '/nclt/public/order_view.php?path=abc%3D%3D' in current_orders[0]['source_url']
+    assert current_orders[0]['order_date'] == '2026-07-08'
+    assert len(legacy_orders) == 1 and 'ordersview.drt?path=xyz' in legacy_orders[0]['source_url']
     print('NCLT watcher correctness self-test passed')
 
 def main() -> int:
