@@ -19,7 +19,9 @@ function closeModal(){$('#modalHost').innerHTML='';}
 function statusOptions(current='',includeNoChange=false){return `${includeNoChange?'<option value="">Do not change IA status</option>':''}${APP_STATUSES.map(s=>`<option ${current===s?'selected':''}>${esc(s)}</option>`).join('')}`;}
 function exactCauseAccess(x){return Boolean(x?.cause_list_date&&x?.next_hearing_date&&x.cause_list_date===x.next_hearing_date&&x.cause_list_url);}
 function accessButtons(x){if(!exactCauseAccess(x))return `<span class="pending-link">Cause list not published/matched yet</span>`;return `<a class="access-btn" href="${esc(x.cause_list_url)}" target="_blank" rel="noopener">Cause list</a>${x.vc_url?`<a class="access-btn vc" href="${esc(x.vc_url)}" target="_blank" rel="noopener">Join VC</a>`:''}`;}
-function nextForMatter(m){return m.application_next_hearing||m.next_hearing_date||m.nclt_next_listing_date||null;}
+function nextForMatter(m){const ds=[m.application_next_hearing,m.next_hearing_date,m.nclt_next_listing_date].filter(x=>x&&daysUntil(x)!==null&&daysUntil(x)>=0).sort();return ds[0]||null;}
+function hasPastDate(m){return [m.application_next_hearing,m.next_hearing_date,m.nclt_next_listing_date].some(x=>x&&daysUntil(x)!==null&&daysUntil(x)<0);}
+function matterNextLabel(m){const n=nextForMatter(m);return n?fmtDate(n):(hasPastDate(m)?'Past date — update needed':'—');}
 
 async function loadDashboard(){const j=await api(`/api/dashboard?today=${today()}`);state.dashboard=j;renderDashboard(j);}
 function renderDashboard(j){
@@ -55,10 +57,11 @@ function renderDashboard(j){
     </article>`;
   }).join('')||'<div class="empty-card">No hearings in the next 7 days.</div>';
 
-  $('#mattersGrid').innerHTML=j.matters.map(m=>{const ws=watchState(m),next=nextForMatter(m),nnew=Number(m.new_application_count||0)+Number(m.new_order_count||0);return `<article class="matter-card matter-open" data-id="${m.id}">
+  const sortedMatters=[...j.matters].sort((a,b)=>{const af=nextForMatter(a),bf=nextForMatter(b);if(af&&bf)return af.localeCompare(bf)||(a.cause_title||'').localeCompare(b.cause_title||'');if(af)return -1;if(bf)return 1;return (a.cause_title||'').localeCompare(b.cause_title||'');});
+  $('#mattersGrid').innerHTML=sortedMatters.map(m=>{const ws=watchState(m),nnew=Number(m.new_application_count||0)+Number(m.new_order_count||0);return `<article class="matter-card matter-open" data-id="${m.id}">
     <div class="matter-card-top"><div><h3>${esc(m.short_name||m.cause_title)}</h3><div class="muted">${esc(m.case_number||m.cause_title)}</div></div><div>${nnew?`<span class="newbadge">${nnew} UPDATE${nnew===1?'':'S'}</span>`:ws.key!=='full'&&ws.key!=='na'?`<span class="watch-badge ${ws.cls}">${ws.label}</span>`:''}</div></div>
     <div class="matter-meta"><span>${esc(m.bench||m.forum||'—')}</span><span>•</span><span class="${m.status==='Active'?'active':'archived'}">${esc(m.status)}</span></div>
-    <div class="matter-bottom"><div class="matter-metric"><span>Open IAs</span><b>${Number(m.open_application_count||0)}</b></div><div class="matter-metric"><span>Next hearing</span><b>${fmtDate(next)}</b></div><div class="matter-metric"><span>NCLT</span><b>${ws.key==='full'?'Synced':ws.label}</b></div></div>
+    <div class="matter-bottom"><div class="matter-metric"><span>Open IAs</span><b>${Number(m.open_application_count||0)}</b></div><div class="matter-metric"><span>Next hearing</span><b>${matterNextLabel(m)}</b></div><div class="matter-metric"><span>NCLT</span><b>${ws.key==='full'?'Synced':ws.label}</b></div></div>
   </article>`;}).join('')||'<div class="empty-card">No matters yet. Add the first matter.</div>';
 
   $('#recentBody').innerHTML=j.recent.map(h=>`<tr><td>${fmtDate(h.hearing_date)}</td><td><a class="link matter-open" data-id="${h.matter_id}" href="#">${esc(h.cause_title)}</a></td><td>${esc(h.application_numbers||'Main matter')}</td><td>${esc(h.outcome||'—')}</td></tr>`).join('')||'<tr><td colspan="4" class="empty">No hearing history yet.</td></tr>';
@@ -101,14 +104,17 @@ async function openQuickHearing(matterId,applicationId=null){const j=await api(`
 async function openMatter(id){
   const j=await api(`/api/matters/${id}`);state.currentMatter=j;const m=j.matter,apps=j.applications||[],orders=j.nclt_orders||[],ws=watchState(m),caseUrl=ncltCaseUrl(m);
   const openApps=apps.filter(a=>!['Disposed','Allowed','Dismissed','Withdrawn','Closed'].includes(a.status));
-  const next=[...openApps.map(a=>a.next_hearing_date).filter(Boolean),m.next_hearing_date,m.nclt_next_listing_date].filter(Boolean).sort()[0]||null;
+  const allNextDates=[...openApps.map(a=>a.next_hearing_date).filter(Boolean),m.next_hearing_date,m.nclt_next_listing_date].filter(Boolean);
+  const futureNextDates=allNextDates.filter(d=>daysUntil(d)!==null&&daysUntil(d)>=0).sort();
+  const next=futureNextDates[0]||null;
+  const pastOnly=!next&&allNextDates.some(d=>daysUntil(d)!==null&&daysUntil(d)<0);
   const appRows=apps.map(a=>{const exact=a.cause_list_date&&a.next_hearing_date&&a.cause_list_date===a.next_hearing_date&&a.cause_list_url;return `<tr><td><b>${esc(a.ia_number)}</b>${a.is_new?' <span class="newbadge">NEW</span>':''}${a.title?`<br><span class="muted">${esc(a.title)}</span>`:''}</td><td class="${['Disposed','Allowed','Dismissed','Withdrawn','Closed'].includes(a.status)?'archived':'active'}">${esc(a.status)}</td><td>${fmtDate(a.next_hearing_date)}</td><td>${esc(a.next_hearing_notes||'—')}</td><td>${exact?`<a class="access-btn" href="${esc(a.cause_list_url)}" target="_blank" rel="noopener">Cause list</a> ${a.vc_url?`<a class="access-btn vc" href="${esc(a.vc_url)}" target="_blank" rel="noopener">VC</a>`:''}`:'<span class="muted">—</span>'}</td><td class="nowrap"><button class="mini secondary edit-app" data-id="${a.id}">Edit</button> <button class="mini danger delete-app" data-id="${a.id}">Delete</button></td></tr>`;}).join('');
   const hist=j.hearings.map(h=>`<div class="hearing"><div class="meta"><strong>${fmtDate(h.hearing_date)}</strong><span class="pill">${esc(h.application_numbers||h.ia_number||'Main matter')}</span>${h.bench?`<span class="muted">${esc(h.bench)}</span>`:''}</div>${h.outcome?`<div><b>Outcome:</b> ${esc(h.outcome)}</div>`:''}${h.notes?`<div class="muted">${esc(h.notes)}</div>`:''}${h.next_hearing_date?`<div><b>Next:</b> ${fmtDate(h.next_hearing_date)}${h.next_hearing_notes?' · '+esc(h.next_hearing_notes):''}</div>`:''}${h.order_url?`<div><a class="link" target="_blank" rel="noopener" href="${esc(h.order_url)}">Open order</a></div>`:''}<div class="hearing-actions"><button class="mini secondary edit-hearing" data-id="${h.id}">Edit</button> <button class="mini danger delete-hearing" data-id="${h.id}">Delete</button></div></div>`).join('');
   const orderRows=orders.map(o=>`<div class="order-card"><div class="order-meta"><strong>${fmtDate(o.order_date)}</strong>${o.is_new?' <span class="newbadge">NEW</span>':''}<span class="pill">${esc(o.application_numbers||o.ia_numbers||'Main / unallocated')}</span></div><div>${esc(o.title||o.order_type||'NCLT order')}</div><a class="link" href="${esc(o.source_url)}" target="_blank" rel="noopener">Open official order</a></div>`).join('');
   const newN=apps.filter(a=>a.is_new).length+orders.filter(o=>o.is_new).length;
   openModal(`<div class="modal-head"><div><h2 class="matter-title">${esc(m.short_name||m.cause_title)}</h2><div class="case-subtitle">${esc(m.case_number||m.cause_title)}</div></div><button class="secondary" id="closeMatter">Close</button></div>
   <div class="matter-toolbar"><button class="primary" id="addHearing">+ Log hearing</button><button class="secondary" id="addApplication">+ Add IA</button><button class="secondary" id="editMatter">Edit matter</button>${newN?`<button class="secondary" id="reviewNclt">Mark ${newN} NCLT update${newN===1?'':'s'} reviewed</button>`:''}</div>
-  <div class="summary-chips"><span class="summary-chip">${esc(m.bench||m.forum||'—')}</span><span class="summary-chip">${openApps.length} open IA${openApps.length===1?'':'s'}</span><span class="summary-chip">Next: ${fmtDate(next)}</span><span class="summary-chip ${m.status==='Active'?'active':''}">${esc(m.status)}</span></div>
+  <div class="summary-chips"><span class="summary-chip">${esc(m.bench||m.forum||'—')}</span><span class="summary-chip">${openApps.length} open IA${openApps.length===1?'':'s'}</span><span class="summary-chip">${next?`Next: ${fmtDate(next)}`:(pastOnly?'Past date — update needed':'Next: —')}</span><span class="summary-chip ${m.status==='Active'?'active':''}">${esc(m.status)}</span></div>
 
   <section class="matter-section"><h3>IAs / applications (${apps.length})</h3><div class="tablewrap"><table><thead><tr><th>IA / application</th><th>Status</th><th>Next</th><th>Prep</th><th>Access</th><th></th></tr></thead><tbody>${appRows||'<tr><td colspan="6" class="empty">No IAs yet. Use “+ Add IA”.</td></tr>'}</tbody></table></div></section>
 
