@@ -1,79 +1,21 @@
 import { json } from '../_lib/http.js';
 import { requireAuth } from '../_lib/auth.js';
-
-function plusDays(iso, days) {
-  const d = new Date(`${iso}T00:00:00Z`); d.setUTCDate(d.getUTCDate()+days); return d.toISOString().slice(0,10);
-}
-
-export async function onRequestGet(context) {
-  const denied = await requireAuth(context); if (denied) return denied;
-  const url = new URL(context.request.url);
-  const today = /^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get('today')||'') ? url.searchParams.get('today') : new Date().toISOString().slice(0,10);
-  const through = plusDays(today, 7);
-
-  const [upcomingApps, upcomingMain, matters, recent, newApps, newOrders] = await Promise.all([
-    context.env.DB.prepare(`
-      SELECT a.id AS application_id, a.ia_number, a.title AS application_title, a.status AS application_status,
-             a.bench AS application_bench, a.next_hearing_date, a.next_hearing_notes,
-             m.id, m.cause_title, m.short_name, m.forum, m.bench, m.case_number, m.status
-      FROM applications a JOIN matters m ON m.id=a.matter_id
-      WHERE m.status='Active'
-        AND a.status NOT IN ('Disposed','Allowed','Dismissed','Withdrawn','Closed')
-        AND a.next_hearing_date IS NOT NULL
-        AND a.next_hearing_date >= ?1 AND a.next_hearing_date <= ?2
-      ORDER BY a.next_hearing_date ASC, m.cause_title ASC, a.ia_number ASC
-    `).bind(today,through).all(),
-    context.env.DB.prepare(`
-      SELECT NULL AS application_id, 'Main matter' AS ia_number, NULL AS application_title,
-             'Pending' AS application_status, m.bench AS application_bench,
-             COALESCE(m.next_hearing_date,m.nclt_next_listing_date) AS next_hearing_date, m.next_hearing_notes,
-             m.id, m.cause_title, m.short_name, m.forum, m.bench, m.case_number, m.status
-      FROM matters m
-      WHERE m.status='Active' AND COALESCE(m.next_hearing_date,m.nclt_next_listing_date) IS NOT NULL
-        AND COALESCE(m.next_hearing_date,m.nclt_next_listing_date) >= ?1 AND COALESCE(m.next_hearing_date,m.nclt_next_listing_date) <= ?2
-        AND NOT EXISTS (SELECT 1 FROM applications a WHERE a.matter_id=m.id AND a.next_hearing_date IS NOT NULL)
-      ORDER BY COALESCE(m.next_hearing_date,m.nclt_next_listing_date) ASC, m.cause_title ASC
-    `).bind(today,through).all(),
-    context.env.DB.prepare(`
-      SELECT m.*,
-             COUNT(a.id) AS application_count,
-             SUM(CASE WHEN a.status NOT IN ('Disposed','Allowed','Dismissed','Withdrawn','Closed') THEN 1 ELSE 0 END) AS open_application_count,
-             MIN(CASE WHEN a.status NOT IN ('Disposed','Allowed','Dismissed','Withdrawn','Closed') THEN a.next_hearing_date END) AS application_next_hearing,
-             SUM(CASE WHEN a.is_new=1 THEN 1 ELSE 0 END) AS new_application_count,
-             (SELECT COUNT(*) FROM nclt_orders no WHERE no.matter_id=m.id AND no.is_new=1) AS new_order_count
-      FROM matters m LEFT JOIN applications a ON a.matter_id=m.id
-      GROUP BY m.id
-      ORDER BY CASE m.status WHEN 'Active' THEN 0 ELSE 1 END,
-               CASE WHEN application_next_hearing IS NULL AND m.next_hearing_date IS NULL AND m.nclt_next_listing_date IS NULL THEN 1 ELSE 0 END,
-               COALESCE(application_next_hearing,m.next_hearing_date,m.nclt_next_listing_date) ASC, m.cause_title ASC
-    `).all(),
-    context.env.DB.prepare(`
-      SELECT h.id, h.matter_id, h.hearing_date, h.outcome, m.cause_title,
-             COALESCE(GROUP_CONCAT(a.ia_number, ' · '), h.ia_number) AS application_numbers
-      FROM hearings h JOIN matters m ON m.id=h.matter_id
-      LEFT JOIN hearing_applications ha ON ha.hearing_id=h.id
-      LEFT JOIN applications a ON a.id=ha.application_id
-      GROUP BY h.id
-      ORDER BY h.hearing_date DESC, h.id DESC LIMIT 12
-    `).all(),
-    context.env.DB.prepare(`
-      SELECT a.id, a.matter_id, a.ia_number, a.detected_at, a.source_reference,
-             m.cause_title, m.short_name
-      FROM applications a JOIN matters m ON m.id=a.matter_id
-      WHERE a.is_new=1
-      ORDER BY COALESCE(a.detected_at,a.created_at) DESC, a.id DESC LIMIT 20
-    `).all(),
-    context.env.DB.prepare(`
-      SELECT no.id, no.matter_id, no.order_date, no.title, no.source_url, no.ia_numbers, no.discovered_at,
-             m.cause_title, m.short_name
-      FROM nclt_orders no JOIN matters m ON m.id=no.matter_id
-      WHERE no.is_new=1
-      ORDER BY COALESCE(no.order_date,no.discovered_at) DESC, no.id DESC LIMIT 20
-    `).all(),
+function plusDays(iso,days){const d=new Date(`${iso}T00:00:00Z`);d.setUTCDate(d.getUTCDate()+days);return d.toISOString().slice(0,10);}
+export async function onRequestGet(context){
+  const denied=await requireAuth(context);if(denied)return denied;
+  const url=new URL(context.request.url);const today=/^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get('today')||'')?url.searchParams.get('today'):new Date().toISOString().slice(0,10);const through=plusDays(today,7);
+  const [upcomingApps,upcomingMain,matters,recent,newApps,newOrders,healthRows]=await Promise.all([
+    context.env.DB.prepare(`SELECT a.id AS application_id,a.ia_number,a.title AS application_title,a.status AS application_status,a.bench AS application_bench,a.next_hearing_date,a.next_hearing_notes,m.id,m.cause_title,m.short_name,m.forum,m.bench,m.case_number,m.status FROM applications a JOIN matters m ON m.id=a.matter_id WHERE m.status='Active' AND a.status NOT IN ('Disposed','Allowed','Dismissed','Withdrawn','Closed') AND a.next_hearing_date IS NOT NULL AND a.next_hearing_date>=?1 AND a.next_hearing_date<=?2 ORDER BY a.next_hearing_date ASC,m.cause_title ASC,a.ia_number ASC`).bind(today,through).all(),
+    context.env.DB.prepare(`SELECT NULL AS application_id,'Main matter' AS ia_number,NULL AS application_title,'Pending' AS application_status,m.bench AS application_bench,COALESCE(m.next_hearing_date,m.nclt_next_listing_date) AS next_hearing_date,m.next_hearing_notes,m.id,m.cause_title,m.short_name,m.forum,m.bench,m.case_number,m.status FROM matters m WHERE m.status='Active' AND COALESCE(m.next_hearing_date,m.nclt_next_listing_date) IS NOT NULL AND COALESCE(m.next_hearing_date,m.nclt_next_listing_date)>=?1 AND COALESCE(m.next_hearing_date,m.nclt_next_listing_date)<=?2 AND NOT EXISTS (SELECT 1 FROM applications a WHERE a.matter_id=m.id AND a.next_hearing_date IS NOT NULL) ORDER BY COALESCE(m.next_hearing_date,m.nclt_next_listing_date) ASC,m.cause_title ASC`).bind(today,through).all(),
+    context.env.DB.prepare(`SELECT m.*,COUNT(a.id) AS application_count,SUM(CASE WHEN a.status NOT IN ('Disposed','Allowed','Dismissed','Withdrawn','Closed') THEN 1 ELSE 0 END) AS open_application_count,MIN(CASE WHEN a.status NOT IN ('Disposed','Allowed','Dismissed','Withdrawn','Closed') THEN a.next_hearing_date END) AS application_next_hearing,SUM(CASE WHEN a.is_new=1 THEN 1 ELSE 0 END) AS new_application_count,(SELECT COUNT(*) FROM nclt_orders no WHERE no.matter_id=m.id AND no.is_new=1) AS new_order_count FROM matters m LEFT JOIN applications a ON a.matter_id=m.id GROUP BY m.id ORDER BY CASE m.status WHEN 'Active' THEN 0 ELSE 1 END,CASE WHEN application_next_hearing IS NULL AND m.next_hearing_date IS NULL AND m.nclt_next_listing_date IS NULL THEN 1 ELSE 0 END,COALESCE(application_next_hearing,m.next_hearing_date,m.nclt_next_listing_date) ASC,m.cause_title ASC`).all(),
+    context.env.DB.prepare(`SELECT h.id,h.matter_id,h.hearing_date,h.outcome,m.cause_title,COALESCE(GROUP_CONCAT(a.ia_number,' · '),h.ia_number) AS application_numbers FROM hearings h JOIN matters m ON m.id=h.matter_id LEFT JOIN hearing_applications ha ON ha.hearing_id=h.id LEFT JOIN applications a ON a.id=ha.application_id GROUP BY h.id ORDER BY h.hearing_date DESC,h.id DESC LIMIT 12`).all(),
+    context.env.DB.prepare(`SELECT a.id,a.matter_id,a.ia_number,a.detected_at,a.source_reference,m.cause_title,m.short_name FROM applications a JOIN matters m ON m.id=a.matter_id WHERE a.is_new=1 ORDER BY COALESCE(a.detected_at,a.created_at) DESC,a.id DESC LIMIT 20`).all(),
+    context.env.DB.prepare(`SELECT no.id,no.matter_id,no.order_date,no.title,no.source_url,no.ia_numbers,no.discovered_at,m.cause_title,m.short_name FROM nclt_orders no JOIN matters m ON m.id=no.matter_id WHERE no.is_new=1 ORDER BY COALESCE(no.order_date,no.discovered_at) DESC,no.id DESC LIMIT 20`).all(),
+    context.env.DB.prepare(`SELECT id,short_name,cause_title,nclt_watch_health,nclt_coverage_level,nclt_last_checked_at,nclt_last_successful_check_at,nclt_last_full_check_at,nclt_source_case_status,nclt_source_cause_status FROM matters WHERE status='Active' AND lower(forum) LIKE '%nclt%' ORDER BY id`).all(),
   ]);
-
-  const upcoming = [...upcomingApps.results, ...upcomingMain.results].sort((a,b)=>(a.next_hearing_date||'').localeCompare(b.next_hearing_date||'') || a.cause_title.localeCompare(b.cause_title));
-  return json({today,through,upcoming,matters:matters.results,recent:recent.results,
-    nclt_alerts:{new_applications:newApps.results,new_orders:newOrders.results,
-      count:(newApps.results?.length||0)+(newOrders.results?.length||0)}});
+  const hr=healthRows.results||[];let healthy=0,limited=0,failed=0,stale=0,full=0;
+  const now=Date.now();for(const m of hr){if(m.nclt_coverage_level==='full')full++;if(m.nclt_watch_health==='healthy')healthy++;else if(m.nclt_watch_health==='failed')failed++;else limited++;const t=Date.parse((m.nclt_last_checked_at||'').replace(' ','T')+'Z');if(!Number.isFinite(t)||now-t>10*3600000)stale++;}
+  const overall=failed||stale?'warning':(limited||full<hr.length?'limited':'healthy');
+  const upcoming=[...upcomingApps.results,...upcomingMain.results].sort((a,b)=>(a.next_hearing_date||'').localeCompare(b.next_hearing_date||'')||a.cause_title.localeCompare(b.cause_title));
+  return json({today,through,upcoming,matters:matters.results,recent:recent.results,nclt_alerts:{new_applications:newApps.results,new_orders:newOrders.results,count:(newApps.results?.length||0)+(newOrders.results?.length||0)},watch_health:{overall,total:hr.length,healthy,limited,failed,stale,full,matters:hr}});
 }

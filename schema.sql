@@ -20,6 +20,13 @@ CREATE TABLE IF NOT EXISTS matters (
   nclt_last_checked_at TEXT,
   nclt_last_error TEXT,
   nclt_next_listing_date TEXT,
+  nclt_coverage_level TEXT NOT NULL DEFAULT 'limited',
+  nclt_watch_health TEXT NOT NULL DEFAULT 'unknown',
+  nclt_source_case_status TEXT,
+  nclt_source_cause_status TEXT,
+  nclt_last_successful_check_at TEXT,
+  nclt_last_full_check_at TEXT,
+  nclt_consecutive_failures INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -105,6 +112,10 @@ CREATE TABLE IF NOT EXISTS nclt_sync_runs (
   new_applications INTEGER NOT NULL DEFAULT 0,
   new_orders INTEGER NOT NULL DEFAULT 0,
   error_summary TEXT,
+  source_case_status TEXT,
+  source_cause_status TEXT,
+  coverage_level TEXT,
+  cause_docs_scanned INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY (matter_id) REFERENCES matters(id) ON DELETE CASCADE
 );
 
