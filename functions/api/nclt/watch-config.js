@@ -12,7 +12,7 @@ export async function onRequestGet(context) {
   const out=[];
   for (const m of matters.results) {
     const [apps,orders] = await Promise.all([
-      context.env.DB.prepare('SELECT ia_number,next_hearing_date,cause_list_date FROM applications WHERE matter_id=?1').bind(m.id).all(),
+      context.env.DB.prepare("SELECT ia_number,next_hearing_date,cause_list_date FROM applications WHERE matter_id=?1 AND upper(COALESCE(source,'manual'))!='NCLT'").bind(m.id).all(),
       context.env.DB.prepare('SELECT source_url FROM nclt_orders WHERE matter_id=?1').bind(m.id).all(),
     ]);
     out.push({...m,

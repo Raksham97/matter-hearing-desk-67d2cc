@@ -11,7 +11,7 @@ export async function onRequestPut(context) {
     await context.env.DB.prepare(`
       UPDATE applications SET ia_number=?1, title=?2, status=?3, bench=?4,
         next_hearing_date=?5, next_hearing_notes=?6, notes=?7, official_url=?8,
-        updated_at=datetime('now')
+        source='manual', is_new=0, updated_at=datetime('now')
       WHERE id=?9
     `).bind(
       ia, clean(b.title,500), clean(b.status,40)||'Pending', clean(b.bench,150),

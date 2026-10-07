@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Matter Desk</title>
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/styles.css?v=3.4.0">
 </head>
 <body>
 <div id="loginView" class="hidden">
@@ -23,10 +23,9 @@
     <div class="topbar">
       <div>
         <h1>Matter Desk</h1>
-        <p>Hearings, IAs and NCLT updates.</p>
+        <p>Hearings, IAs and orders.</p>
       </div>
       <div class="top-actions">
-        <span id="syncPill" class="sync-pill">Checking NCLT…</span>
         <details class="tools-menu">
           <summary>Tools</summary>
           <div class="tools-popover">
@@ -42,12 +41,9 @@
   <main>
     <div class="summary-row">
       <div class="summary-card"><span>This week</span><strong id="sUpcoming">—</strong></div>
-      <div class="summary-card"><span>NCLT updates to review</span><strong id="sUpdates">—</strong></div>
+      <div class="summary-card"><span>NCLT orders</span><strong id="sOrders">—</strong></div>
       <div class="summary-card"><span>Active matters</span><strong id="sActive">—</strong></div>
     </div>
-
-    <div id="ncltHealth" class="watch-health hidden"></div>
-    <div id="ncltAlert" class="nclt-alert hidden"></div>
 
     <div class="actions primary-actions">
       <button id="quickHearingBtn" class="primary">+ Log hearing</button>
@@ -56,9 +52,16 @@
 
     <section class="dashboard-section">
       <div class="section-title simple">
-        <div><h2>Upcoming hearings</h2><span class="muted">Next 7 days</span></div>
+        <div><h2>Upcoming hearings</h2><span class="muted">Only hearings entered in Matter Desk · next 7 days</span></div>
       </div>
       <div id="upcomingList" class="hearing-list"></div>
+    </section>
+
+    <section class="dashboard-section">
+      <div class="section-title simple">
+        <div><h2>Recent NCLT orders</h2><span class="muted">Official order links pulled from the tracked matters</span></div>
+      </div>
+      <div id="recentOrders" class="order-list"></div>
     </section>
 
     <section class="dashboard-section">
@@ -78,6 +81,6 @@
 </div>
 <div id="modalHost"></div>
 <script src="/xlsx.js"></script>
-<script src="/app.js?v=3.3.3"></script>
+<script src="/app.js?v=3.4.0"></script>
 </body>
 </html>

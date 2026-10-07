@@ -8,18 +8,17 @@ export async function onRequestGet(context) {
   const id = Number(context.params.id);
   const matter = await context.env.DB.prepare('SELECT * FROM matters WHERE id=?1').bind(id).first();
   if (!matter) return json({ error: 'Matter not found' }, 404);
-  const [apps, hearings, orders, sync] = await Promise.all([
+  const [apps, hearings, orders] = await Promise.all([
     context.env.DB.prepare(`
-      SELECT * FROM applications WHERE matter_id=?1
-      ORDER BY is_new DESC,
-               CASE status WHEN 'Pending' THEN 0 WHEN 'Listed' THEN 1 WHEN 'Part-heard' THEN 2 ELSE 3 END,
+      SELECT * FROM applications WHERE matter_id=?1 AND upper(COALESCE(source,'manual'))!='NCLT'
+      ORDER BY CASE status WHEN 'Pending' THEN 0 WHEN 'Listed' THEN 1 WHEN 'Part-heard' THEN 2 ELSE 3 END,
                CASE WHEN next_hearing_date IS NULL THEN 1 ELSE 0 END,
                next_hearing_date ASC, ia_number ASC
     `).bind(id).all(),
     context.env.DB.prepare(`
       SELECT h.*,
-             GROUP_CONCAT(a.id) AS application_ids_csv,
-             GROUP_CONCAT(a.ia_number, ' · ') AS application_numbers
+             GROUP_CONCAT(CASE WHEN upper(COALESCE(a.source,'manual'))!='NCLT' THEN a.id END) AS application_ids_csv,
+             GROUP_CONCAT(CASE WHEN upper(COALESCE(a.source,'manual'))!='NCLT' THEN a.ia_number END, ' · ') AS application_numbers
       FROM hearings h
       LEFT JOIN hearing_applications ha ON ha.hearing_id=h.id
       LEFT JOIN applications a ON a.id=ha.application_id
@@ -29,7 +28,7 @@ export async function onRequestGet(context) {
     `).bind(id).all(),
     context.env.DB.prepare(`
       SELECT no.*,
-             GROUP_CONCAT(a.ia_number, ' · ') AS application_numbers
+             GROUP_CONCAT(CASE WHEN upper(COALESCE(a.source,'manual'))!='NCLT' THEN a.ia_number END, ' · ') AS application_numbers
       FROM nclt_orders no
       LEFT JOIN nclt_order_applications noa ON noa.order_id=no.id
       LEFT JOIN applications a ON a.id=noa.application_id
@@ -37,11 +36,8 @@ export async function onRequestGet(context) {
       GROUP BY no.id
       ORDER BY COALESCE(no.order_date,'0000-00-00') DESC, no.id DESC
     `).bind(id).all(),
-    context.env.DB.prepare(`
-      SELECT * FROM nclt_sync_runs WHERE matter_id=?1 ORDER BY id DESC LIMIT 1
-    `).bind(id).first(),
   ]);
-  return json({ matter, applications: apps.results, hearings: hearings.results, nclt_orders: orders.results, nclt_sync: sync || null });
+  return json({ matter, applications: apps.results, hearings: hearings.results, nclt_orders: orders.results });
 }
 
 export async function onRequestPut(context) {
@@ -77,7 +73,6 @@ export async function onRequestDelete(context) {
   if (!id) return json({ error: 'Invalid matter' }, 400);
   const matter = await context.env.DB.prepare('SELECT id, cause_title FROM matters WHERE id=?1').bind(id).first();
   if (!matter) return json({ error: 'Matter not found' }, 404);
-
   try {
     await context.env.DB.batch([
       context.env.DB.prepare(`DELETE FROM nclt_order_applications WHERE order_id IN (SELECT id FROM nclt_orders WHERE matter_id=?1)`).bind(id),

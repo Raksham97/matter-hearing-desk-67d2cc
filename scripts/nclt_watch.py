@@ -201,21 +201,46 @@ def identity_matches(page_text: str, cfg: dict) -> bool:
 
 
 def case_windows(text: str, case_number: str) -> list[str]:
+    """Return conservative windows around an exact CP(IB) case-number match.
+
+    Older logic fell back to searching only the bare number/year (for example
+    `2` + `2018`), which is far too weak inside a long cause list and can attach
+    another party's IA to the tracked matter. This version requires the CP/IB
+    structure plus the configured case number and year.
+    """
     number, year = matter_case_signature(case_number)
     if not number or not year:
         return []
+    flat = re.sub(r'\s+', ' ', text or '')
+    pat = re.compile(
+        rf'C\s*\.?\s*P\s*\.?\s*\(?\s*I\s*\.?\s*B\s*\.?\s*\)?'
+        rf'[^0-9]{{0,50}}0*{re.escape(str(int(number)))}\b.{{0,90}}?\b{re.escape(year)}\b',
+        re.I,
+    )
     wins = []
-    patterns = [
-        re.compile(rf'(?is)C\s*\.?\s*P\s*\.?[^\n]{{0,120}}?\b{re.escape(number)}\b[^\n]{{0,120}}?\b{re.escape(year)}\b'),
-        re.compile(rf'(?is)\b{re.escape(number)}\b.{{0,110}}?\b{re.escape(year)}\b'),
-    ]
-    for pat in patterns:
-        for m in pat.finditer(text or ''):
-            wins.append(text[max(0,m.start()-550):min(len(text),m.end()+850)])
-        if wins:
-            break
+    for m in pat.finditer(flat):
+        wins.append(flat[max(0, m.start()-450):min(len(flat), m.end()+800)])
     return wins
 
+
+def strict_matter_windows(text: str, cfg: dict) -> list[str]:
+    wins = case_windows(text, cfg.get('case_number') or '')
+    if not wins:
+        return []
+    # Cause-list PDFs can contain several matters close together. Require the
+    # tracked matter name to be present in the same local window as the exact
+    # case number. Prefer a short recipient-facing name when available.
+    label = cfg.get('short_name') or cfg.get('cause_title') or ''
+    tokens = distinctive_tokens(label)
+    if not tokens:
+        return []
+    required = 1 if len(tokens) == 1 else 2
+    out = []
+    for w in wins:
+        upper = w.upper()
+        if sum(1 for t in tokens[:8] if t in upper) >= required:
+            out.append(w)
+    return out
 
 def bench_matches(row_text: str, slug: str) -> bool:
     slug = (slug or '').strip().lower()
@@ -266,17 +291,13 @@ def fetch_details(session: requests.Session, cfg: dict) -> dict:
     result['status'] = 'success'
     m = re.search(r'Listing\s+Date\s+(\d{2}/\d{2}/\d{4})', page_text, re.I)
     result['next_listing'] = parse_iso_from_dmy(m.group(1) if m else None)
+
+    # Orders are the automatic recipient-facing data we keep. Import every order
+    # link exposed on the exact, identity-verified case-history page. PDF fetching
+    # is only used to improve IA labels for the newest unseen orders; it is never a
+    # prerequisite for displaying the official order link.
     known_urls = set(cfg.get('known_order_urls') or [])
-    seen_urls = set()
-    for tr in soup.find_all('tr'):
-        row_text = ' '.join(tr.stripped_strings)
-        for label in extract_ia_labels(row_text):
-            result['apps'].append({
-                'ia_number': label, 'title': 'Detected from NCLT case history',
-                'notes': 'Automatically detected from NCLT public case history.',
-                'source_reference': url, 'official_url': url,
-            })
-    candidates = []
+    seen_urls = set(); candidates = []
     for tr in soup.find_all('tr'):
         links = [a for a in tr.find_all('a', href=True) if 'ordersview.drt' in (a.get('href') or '')]
         if not links:
@@ -291,28 +312,30 @@ def fetch_details(session: requests.Session, cfg: dict) -> dict:
             seen_urls.add(order_url)
             candidates.append({'order_date':row_date,'row_text':row_text,'row_ias':row_ias,
                                'source_url':order_url,'title':' '.join(a.stripped_strings) or 'NCLT Order'})
+
     unknown = [x for x in candidates if x['source_url'] not in known_urls]
     unknown.sort(key=lambda x: (x.get('order_date') or '', x['source_url']), reverse=True)
-    for item in unknown[:30]:
-        order_url = item['source_url']; ia_labels = list(item.get('row_ias') or [])
+    refined = {}
+    for item in unknown[:40]:
+        labels = list(item.get('row_ias') or [])
         try:
-            rr = request_with_retry(session, order_url, timeout=35)
+            rr = request_with_retry(session, item['source_url'], timeout=35)
             order_text = pdf_or_html_text(rr)
             parsed = extract_ia_labels(order_text)
             if parsed:
-                ia_labels = parsed
-            for label in ia_labels:
-                result['apps'].append({'ia_number':label,'title':'Detected from NCLT order',
-                                       'source_reference':order_url,'official_url':order_url})
+                labels = parsed
         except Exception as e:
             result['errors'].append(f'order fetch {item.get("order_date") or ""}: {type(e).__name__}: {e}')
+        refined[item['source_url']] = labels
+
+    for item in candidates:
+        labels = refined.get(item['source_url'], list(item.get('row_ias') or []))
         result['orders'].append({
             'order_date': item.get('order_date'), 'order_type': item.get('title'), 'title': item.get('title'),
-            'source_url': order_url, 'fingerprint': hashlib.sha256(order_url.encode()).hexdigest(),
-            'ia_numbers': ia_labels,
+            'source_url': item['source_url'], 'fingerprint': hashlib.sha256(item['source_url'].encode()).hexdigest(),
+            'ia_numbers': labels,
         })
     return result
-
 
 def discover_cause_docs(session: requests.Session) -> dict:
     docs, errors, seen = [], [], set()
@@ -343,9 +366,13 @@ def discover_cause_docs(session: requests.Session) -> dict:
 
 
 def scan_cause_docs(session: requests.Session, cfg: dict, docs: list[dict], cache: dict[str,dict]) -> dict:
+    # Cause-list surveillance no longer creates IA/application records. It only
+    # enriches IAs the user already entered, and only when the exact matter case
+    # number + matter name + IA number occur in the same local cause-list window.
     apps, errors, matches = [], [], []
     slug = (cfg.get('nclt_bench_slug') or infer_bench_slug(cfg.get('case_number') or '') or '').strip().lower()
     case_number = cfg.get('case_number') or ''
+    known_apps = list(cfg.get('known_applications') or [])
     if not case_number:
         return {'apps':apps,'errors':['main case number missing; cause-list matching unavailable'],
                 'status':'unconfigured','docs_scanned':0,'detected_bench_slug':None,'matches':[]}
@@ -360,7 +387,7 @@ def scan_cause_docs(session: requests.Session, cfg: dict, docs: list[dict], cach
                 rr = request_with_retry(session, url, timeout=35)
                 cache[url] = pdf_or_html_payload(rr, max_pdf_pages=50)
             payload = cache[url]; text = payload['text']; docs_scanned += 1
-            wins = case_windows(text, case_number)
+            wins = strict_matter_windows(text, cfg)
             if not wins:
                 continue
             if not detected_slug:
@@ -373,20 +400,25 @@ def scan_cause_docs(session: requests.Session, cfg: dict, docs: list[dict], cach
                 'row_text': doc.get('row_text',''),
             }
             matches.append(match)
-            for w in wins:
-                for label in extract_ia_labels(w):
-                    cause_date = doc.get('cause_date')
-                    known = {norm_ia(x.get('ia_number','')): x for x in (cfg.get('known_applications') or [])}
-                    prior = known.get(norm_ia(label)) or {}
-                    inferred_next = None
-                    if cause_date and cause_date >= date.today().isoformat() and not prior.get('next_hearing_date'):
-                        inferred_next = cause_date
+            cause_date = doc.get('cause_date')
+            for prior in known_apps:
+                prior_label = prior.get('ia_number') or ''
+                pkey = norm_ia(prior_label)
+                if not pkey:
+                    continue
+                found = False
+                for w in wins:
+                    labels = extract_ia_labels(w)
+                    if any(norm_ia(x) == pkey for x in labels):
+                        found = True; break
+                if found:
                     apps.append({
-                        'ia_number':label,'title':'Detected from NCLT cause list',
-                        'notes':'Automatically detected when publicly listed by NCLT.',
-                        'source_reference':url,'official_url':url,
-                        'cause_list_url':url,'vc_url':vc_url,'cause_list_date':cause_date,
-                        'next_hearing_date':inferred_next,
+                        'ia_number':prior_label,
+                        'source_reference':url,
+                        'official_url':url,
+                        'cause_list_url':url,
+                        'vc_url':vc_url,
+                        'cause_list_date':cause_date,
                     })
         except Exception as e:
             errors.append(f'cause-list document {url}: {type(e).__name__}: {e}')
@@ -450,23 +482,22 @@ def api_post(session: requests.Session, path: str, payload: dict) -> dict:
 
 
 def self_test() -> None:
-    fixture = 'Item 16 C.P.(IB)922/MB/2022 NEW IA(I.B.C)/2984 (MB)2026 IA No.701/2025 IA (I.B.C) 1324 (MB)/2026 IA(IBC)(PLAN) 35(MB)/2026'
+    fixture = 'Item 16 C.P.(IB)/922(MB)/2022 Ruby Mills Private Limited IA(I.B.C)/2984 (MB)2026 IA No.701/2025'
     got = extract_ia_labels(fixture)
     assert norm_ia('IA 2984 of 2026') == norm_ia('IA(I.B.C)/2984 (MB)2026') == norm_ia('IA 2984/2026')
-    assert {'IA 2984/2026','IA 701/2025','IA 1324/2026','IA 35/2026'}.issubset(set(got))
-    assert case_windows(fixture,'CP IB 922 of 2022')
+    assert {'IA 2984/2026','IA 701/2025'}.issubset(set(got))
+    cfg={'case_number':'CP IB 922 of 2022','cause_title':'Ruby Mills Private Limited'}
+    assert strict_matter_windows(fixture,cfg)
+    # A bare 2/2018 elsewhere in a large cause list must not match Videocon.
+    unrelated='IA 4261/2026 IN C.P.(IB)/102(MB)/2018 Some Other Company Limited'
+    assert not strict_matter_windows(unrelated,{'case_number':'CP IB 2 of 2018','cause_title':'Videocon'})
+    videocon='IA 1354/2020 IN CP(IB)/02/MB/2018 Mr Venugopal Dhoot IN THE MATTER OF State Bank of India V/s Videocon Industries Limited'
+    assert strict_matter_windows(videocon,{'case_number':'CP IB 2 of 2018','cause_title':'Videocon'})
     assert infer_bench_slug('C.P.(IB)/922(MB)/2022') == 'mumbai'
-    assert identity_matches('C.P.(IB)/922(MB)/2022 Ruby Mills Private Limited',
-                            {'case_number':'CP IB 922 of 2022','cause_title':'Ruby Mills Private Limited'})
+    assert identity_matches('C.P.(IB)/922(MB)/2022 Ruby Mills Private Limited',cfg)
     assert extract_vc_url('Cisco WebEx VC Link https://ncltmum.webex.com/meet/ncltmum1', []) == 'https://ncltmum.webex.com/meet/ncltmum1'
     assert parse_iso_from_dmy('Cause List 09/10/2026 Mumbai Bench Court-I') == '2026-10-09'
-    merged = dedupe_apps([
-        {'ia_number':'IA 2984/2026','official_url':'case-history'},
-        {'ia_number':'IA 2984 of 2026','cause_list_url':'cause.pdf','vc_url':'https://example.webex.com/meet/x','cause_list_date':'2099-10-09'},
-    ])
-    assert len(merged) == 1 and merged[0].get('cause_list_url') == 'cause.pdf' and merged[0].get('vc_url')
-    print('NCLT watcher reliability self-test passed')
-
+    print('NCLT watcher correctness self-test passed')
 
 def main() -> int:
     if '--self-test' in sys.argv:
@@ -494,7 +525,7 @@ def main() -> int:
             hard_failures += 1
         if details['status'] not in {'success','unconfigured'} or cause_scan['status'] != 'success':
             degraded += 1
-        preferred_dates = {d for d in (m.get('next_hearing_date'), m.get('nclt_next_listing_date')) if d}
+        preferred_dates = {d for d in (m.get('next_hearing_date'),) if d}
         cause_matches = cause_scan.get('matches') or []
         exact_matches = [x for x in cause_matches if x.get('cause_list_date') in preferred_dates]
         cause_match = (exact_matches or [None])[0]
@@ -511,12 +542,12 @@ def main() -> int:
         }
         try:
             result = api_post(session,'/api/nclt/ingest',payload)
-            total_apps += int(result.get('new_applications') or 0); total_orders += int(result.get('new_orders') or 0)
-            print(f"  coverage={coverage} case={details['status']} cause-list={cause_scan['status']} new IAs={result.get('new_applications',0)} new orders={result.get('new_orders',0)}")
+            total_apps += int(result.get('linked_applications') or 0); total_orders += int(result.get('imported_orders') or 0)
+            print(f"  coverage={coverage} case={details['status']} cause-list={cause_scan['status']} linked manual IAs={result.get('linked_applications',0)} orders imported={result.get('imported_orders',0)}")
         except Exception as e:
             ingest_failures += 1; hard_failures += 1; print(f'  ingest failed: {e}', file=sys.stderr)
         time.sleep(0.5)
-    print(f'NCLT watch complete: {len(matters)} matters, {total_apps} new IAs, {total_orders} new orders, {degraded} degraded, {ingest_failures} ingest failures, {hard_failures} hard source failures')
+    print(f'NCLT watch complete: {len(matters)} matters, {total_apps} manual IA access links matched, {total_orders} orders imported, {degraded} degraded, {ingest_failures} ingest failures, {hard_failures} hard source failures')
     return 1 if hard_failures else 0
 
 
