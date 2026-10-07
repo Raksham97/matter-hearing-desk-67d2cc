@@ -7,3 +7,33 @@ on:
     - cron: '30 11 * * *'   # 17:00 IST
     - cron: '30 12 * * *'   # 18:00 IST
     - cron: '30 13 * * *'   # 19:00 IST
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nclt-matter-watch
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout tracker source
+        uses: actions/checkout@v6
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install public-source parser dependencies
+        run: pip install --disable-pip-version-check requests beautifulsoup4 pypdf
+      - name: Watcher parser self-test
+        run: python scripts/nclt_watch.py --self-test
+      - name: Check NCLT for new IAs and orders
+        env:
+          MATTER_DESK_URL: https://matter-desk-67d2cc.pages.dev
+          NCLT_WATCH_SECRET: ${{ secrets.NCLT_WATCH_SECRET }}
+          NCLT_CAUSE_PAGES: '8'
+          NCLT_MAX_UNSCOPED_DOCS: '60'
+        run: python scripts/nclt_watch.py
