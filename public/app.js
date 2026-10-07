@@ -8,8 +8,18 @@ function today(){const d=new Date();return `${d.getFullYear()}-${String(d.getMon
 async function api(path,opts={}){const r=await fetch(path,{...opts,headers:{'content-type':'application/json',...(opts.headers||{})}});let j={};try{j=await r.json();}catch{}if(r.status===401){showLogin();throw new Error('Session expired');}if(!r.ok)throw new Error(j.error||`Request failed (${r.status})`);return j;}
 function showLogin(){$('#appView').classList.add('hidden');$('#loginView').classList.remove('hidden');}
 function showApp(){$('#loginView').classList.add('hidden');$('#appView').classList.remove('hidden');}
-function daysUntil(iso){if(!iso)return null;const a=new Date(today()+'T00:00:00'),b=new Date(iso+'T00:00:00');return Math.round((b-a)/86400000);}
-function fmtDate(s){if(!s)return '—';const [y,m,d]=s.split('-');return `${d}-${m}-${y}`;}
+function canonicalDate(value){
+  if(!value)return null;
+  const s=String(value).trim();
+  let m=s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if(m)return `${m[1]}-${m[2]}-${m[3]}`;
+  m=s.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  if(m)return `${m[3]}-${m[2]}-${m[1]}`;
+  return null;
+}
+function dateSerial(value){const iso=canonicalDate(value);if(!iso)return null;const [y,m,d]=iso.split('-').map(Number);return Date.UTC(y,m-1,d)/86400000;}
+function daysUntil(value){const a=dateSerial(today()),b=dateSerial(value);return a===null||b===null?null:Math.round(b-a);}
+function fmtDate(value){const iso=canonicalDate(value);if(!iso)return '—';const [y,m,d]=iso.split('-');return `${d}-${m}-${y}`;}
 function parseUtc(s){if(!s)return NaN;const v=String(s).includes('T')?String(s):String(s).replace(' ','T')+'Z';return Date.parse(v);}
 function ncltCaseUrl(m){if(!m?.nclt_filing_no||!m?.nclt_bench_slug)return '';try{return `https://efiling.nclt.gov.in/nclt/public/details.php?filing_no=${encodeURIComponent(btoa(`${m.nclt_filing_no}/${m.nclt_bench_slug}`))}`;}catch{return '';}}
 function watchState(m){if(!String(m?.forum||'').toUpperCase().includes('NCLT'))return {key:'na',label:'—',cls:''};const t=parseUtc(m.nclt_last_checked_at);const stale=!Number.isFinite(t)||Date.now()-t>10*3600000;if(stale||m.nclt_watch_health==='failed')return {key:'degraded',label:'DEGRADED',cls:'watch-bad'};if(m.nclt_watch_health==='healthy'&&m.nclt_coverage_level==='full')return {key:'full',label:'FULL',cls:'watch-full'};return {key:'limited',label:'LIMITED',cls:'watch-limited'};}
@@ -17,10 +27,10 @@ function sourceLabel(v){const x=String(v||'unknown');return x==='success'?'OK':x
 function openModal(html){$('#modalHost').innerHTML=`<div class="modalback" id="modalBack"><div class="modal">${html}</div></div>`;$('#modalBack').addEventListener('click',e=>{if(e.target.id==='modalBack')closeModal();});}
 function closeModal(){$('#modalHost').innerHTML='';}
 function statusOptions(current='',includeNoChange=false){return `${includeNoChange?'<option value="">Do not change IA status</option>':''}${APP_STATUSES.map(s=>`<option ${current===s?'selected':''}>${esc(s)}</option>`).join('')}`;}
-function exactCauseAccess(x){return Boolean(x?.cause_list_date&&x?.next_hearing_date&&x.cause_list_date===x.next_hearing_date&&x.cause_list_url);}
+function exactCauseAccess(x){const c=canonicalDate(x?.cause_list_date),h=canonicalDate(x?.next_hearing_date);return Boolean(c&&h&&c===h&&x.cause_list_url);}
 function accessButtons(x){if(!exactCauseAccess(x))return `<span class="pending-link">Cause list not published/matched yet</span>`;return `<a class="access-btn" href="${esc(x.cause_list_url)}" target="_blank" rel="noopener">Cause list</a>${x.vc_url?`<a class="access-btn vc" href="${esc(x.vc_url)}" target="_blank" rel="noopener">Join VC</a>`:''}`;}
-function nextForMatter(m){const ds=[m.application_next_hearing,m.next_hearing_date,m.nclt_next_listing_date].filter(x=>x&&daysUntil(x)!==null&&daysUntil(x)>=0).sort();return ds[0]||null;}
-function hasPastDate(m){return [m.application_next_hearing,m.next_hearing_date,m.nclt_next_listing_date].some(x=>x&&daysUntil(x)!==null&&daysUntil(x)<0);}
+function nextForMatter(m){const ds=[m.application_next_hearing,m.next_hearing_date,m.nclt_next_listing_date].map(canonicalDate).filter(x=>x&&daysUntil(x)!==null&&daysUntil(x)>=0).sort();return ds[0]||null;}
+function hasPastDate(m){return [m.application_next_hearing,m.next_hearing_date,m.nclt_next_listing_date].map(canonicalDate).some(x=>x&&daysUntil(x)!==null&&daysUntil(x)<0);}
 function matterNextLabel(m){const n=nextForMatter(m);return n?fmtDate(n):(hasPastDate(m)?'Past date — update needed':'—');}
 
 async function loadDashboard(){const j=await api(`/api/dashboard?today=${today()}`);state.dashboard=j;renderDashboard(j);}
