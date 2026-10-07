@@ -437,6 +437,11 @@ def scan_cause_docs(session: requests.Session, cfg: dict, docs: list[dict], cach
             matches.append(match)
             cause_date = doc.get('cause_date')
             for prior in known_apps:
+                target_date = (prior.get('next_hearing_date') or '').strip()
+                # Recipient-facing access must be tied to the exact user-managed IA hearing date.
+                # If the same IA appears in an older/newer cause list, ignore that occurrence.
+                if not target_date or cause_date != target_date:
+                    continue
                 prior_label = prior.get('ia_number') or ''
                 pkey = norm_ia(prior_label)
                 if not pkey:
@@ -617,7 +622,7 @@ def main() -> int:
                 )
                 matter_orders += int(orr.get('imported_orders') or 0)
             total_orders += matter_orders
-            matched_labels = [x.get('ia_number') for x in (cause_scan.get('apps') or []) if x.get('ia_number')]
+            matched_labels = [f"{x.get('ia_number')}@{x.get('cause_list_date')}" for x in (cause_scan.get('apps') or []) if x.get('ia_number')]
             print(f"  coverage={coverage} case={details['status']} cause-source={cause_scan['status']} exact-cause-IAs={result.get('linked_applications',0)} matched={matched_labels or 'none'} orders imported={matter_orders}")
         except Exception as e:
             ingest_failures += 1; hard_failures += 1; print(f'  ingest failed: {e}', file=sys.stderr)
