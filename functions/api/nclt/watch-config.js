@@ -6,7 +6,7 @@ export async function onRequestGet(context) {
   const matters = await context.env.DB.prepare(`
     SELECT id,cause_title,short_name,bench,case_number,nclt_filing_no,nclt_bench_slug,
            nclt_last_checked_at,nclt_next_listing_date
-    FROM matters WHERE status='Active' AND nclt_watch_enabled=1
+    FROM matters WHERE status='Active' AND UPPER(COALESCE(forum,'NCLT')) LIKE '%NCLT%'
     ORDER BY id ASC
   `).all();
   const out=[];

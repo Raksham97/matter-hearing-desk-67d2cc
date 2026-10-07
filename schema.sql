@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS matters (
   next_hearing_notes TEXT,
   notes TEXT,
   official_case_url TEXT,
-  nclt_watch_enabled INTEGER NOT NULL DEFAULT 0,
+  nclt_watch_enabled INTEGER NOT NULL DEFAULT 1,
   nclt_filing_no TEXT,
   nclt_bench_slug TEXT,
   nclt_last_checked_at TEXT,

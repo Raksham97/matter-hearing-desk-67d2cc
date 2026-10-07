@@ -1,7 +1,7 @@
 import { json, readJson, clean, validDate } from '../_lib/http.js';
 import { requireAuth } from '../_lib/auth.js';
 
-function watchFlag(v) { return v === true || v === 1 || v === '1' || v === 'on' ? 1 : 0; }
+function isNclt(forum) { return String(forum || 'NCLT').toUpperCase().includes('NCLT'); }
 
 export async function onRequestGet(context) {
   const denied = await requireAuth(context); if (denied) return denied;
@@ -38,7 +38,7 @@ export async function onRequestPost(context) {
       cause,clean(b.short_name,150),clean(b.forum,80)||'NCLT',clean(b.bench,150),
       clean(b.case_number,150),clean(b.client_role,150),clean(b.status,30)||'Active',
       validDate(b.next_hearing_date),clean(b.next_hearing_notes,2000),clean(b.notes,4000),
-      clean(b.official_case_url,1000),watchFlag(b.nclt_watch_enabled),clean(b.nclt_filing_no,80),clean(b.nclt_bench_slug,80)
+      clean(b.official_case_url,1000),isNclt(b.forum)?1:0,clean(b.nclt_filing_no,80),clean(b.nclt_bench_slug,80)
     ).run();
     return json({ok:true,id:r.meta.last_row_id},201);
   } catch(e) {
