@@ -22,6 +22,7 @@ CAUSE_LIST = 'https://nclt.gov.in/all-cause-list'
 UA = 'MatterDesk-NCLT-Watch/2.0 (public tribunal monitoring; low-frequency; reliability-audited)'
 CAUSE_PAGES = max(2, min(int(os.environ.get('NCLT_CAUSE_PAGES', '8')), 20))
 MAX_UNSCOPED_DOCS = max(20, min(int(os.environ.get('NCLT_MAX_UNSCOPED_DOCS', '60')), 120))
+ORDER_BATCH_SIZE = max(4, min(int(os.environ.get('NCLT_ORDER_BATCH_SIZE', '12')), 20))
 
 IA_PATTERNS = [
     re.compile(
@@ -358,6 +359,11 @@ def fetch_details(session: requests.Session, cfg: dict) -> dict:
         refined[item['source_url']] = labels
 
     for item in candidates:
+        # Once an official order URL has been persisted, do not resend it on every
+        # scheduled run. This keeps the Cloudflare ingest path bounded and makes
+        # historical backfill naturally converge to a small incremental workload.
+        if item['source_url'] in known_urls:
+            continue
         labels = refined.get(item['source_url'], list(item.get('row_ias') or []))
         result['orders'].append({
             'order_date': item.get('order_date'), 'order_type': item.get('title'), 'title': item.get('title'),
@@ -505,9 +511,28 @@ def api_get(session: requests.Session, path: str) -> dict:
     r.raise_for_status(); return r.json()
 
 
-def api_post(session: requests.Session, path: str, payload: dict) -> dict:
-    r = session.post(f'{DESK_URL}{path}', headers={'x-nclt-watch-secret':SECRET}, json=payload, timeout=45)
-    r.raise_for_status(); return r.json()
+def api_post(session: requests.Session, path: str, payload: dict, *, timeout: int = 35, attempts: int = 4) -> dict:
+    last = None
+    for attempt in range(attempts):
+        try:
+            r = session.post(
+                f'{DESK_URL}{path}',
+                headers={'x-nclt-watch-secret':SECRET},
+                json=payload,
+                timeout=timeout,
+            )
+            r.raise_for_status()
+            return r.json()
+        except Exception as exc:
+            last = exc
+            if attempt + 1 < attempts:
+                time.sleep(1.5 * (2 ** attempt))
+    raise last
+
+
+def chunks(items: list[dict], size: int):
+    for i in range(0, len(items), size):
+        yield items[i:i+size]
 
 
 def self_test() -> None:
@@ -533,6 +558,7 @@ def self_test() -> None:
     assert len(current_orders) == 1 and '/nclt/public/order_view.php?path=abc%3D%3D' in current_orders[0]['source_url']
     assert current_orders[0]['order_date'] == '2026-07-08'
     assert len(legacy_orders) == 1 and 'ordersview.drt?path=xyz' in legacy_orders[0]['source_url']
+    assert [len(x) for x in chunks([{'x':i} for i in range(25)], 12)] == [12,12,1]
     print('NCLT watcher correctness self-test passed')
 
 def main() -> int:
@@ -567,7 +593,7 @@ def main() -> int:
         cause_match = (exact_matches or [None])[0]
         payload = {
             'matter_id':m['id'], 'source_url':details['url'] or CAUSE_LIST,
-            'applications':all_apps, 'orders':details['orders'], 'next_listing_date':details['next_listing'],
+            'applications':all_apps, 'orders':[], 'next_listing_date':details['next_listing'],
             'errors':errors[:30], 'detected_bench_slug':cause_scan.get('detected_bench_slug'),
             'cause_list':cause_match,
             'source_health':{
@@ -576,10 +602,22 @@ def main() -> int:
                 'cause_docs_discovered':len(cause['docs']), 'cause_docs_scanned':cause_scan['docs_scanned'],
             },
         }
+        matter_orders = 0
         try:
-            result = api_post(session,'/api/nclt/ingest',payload)
-            total_apps += int(result.get('linked_applications') or 0); total_orders += int(result.get('imported_orders') or 0)
-            print(f"  coverage={coverage} case={details['status']} cause-list={cause_scan['status']} linked manual IAs={result.get('linked_applications',0)} orders imported={result.get('imported_orders',0)}")
+            # Keep source-health / IA enrichment small and fast. Historical orders are
+            # sent through a dedicated bounded endpoint in idempotent batches so one
+            # large matter can never time out and block the others.
+            result = api_post(session,'/api/nclt/ingest',payload, timeout=30)
+            total_apps += int(result.get('linked_applications') or 0)
+            for batch in chunks(details['orders'], ORDER_BATCH_SIZE):
+                orr = api_post(
+                    session, '/api/nclt/orders',
+                    {'matter_id':m['id'], 'orders':batch},
+                    timeout=35, attempts=4,
+                )
+                matter_orders += int(orr.get('imported_orders') or 0)
+            total_orders += matter_orders
+            print(f"  coverage={coverage} case={details['status']} cause-list={cause_scan['status']} linked manual IAs={result.get('linked_applications',0)} orders imported={matter_orders}")
         except Exception as e:
             ingest_failures += 1; hard_failures += 1; print(f'  ingest failed: {e}', file=sys.stderr)
         time.sleep(0.5)
