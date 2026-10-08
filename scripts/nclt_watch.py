@@ -400,6 +400,60 @@ def discover_cause_docs(session: requests.Session) -> dict:
     return {'docs':docs,'errors':errors,'status':status,'successful_pages':successful_pages}
 
 
+
+# Optional recipient-facing main-case cause-list Sr. No.  This parser uses the
+# text already downloaded for routine exact-date IA/VC matching.  It must NEVER
+# affect those existing matching decisions, the monitoring health or VC links.
+# NCLT numbers parent cases in the left column and IAs 1., 2. in the next.
+_MAIN_CP_ROW = re.compile(
+    r'^\s*(?P<serial>[1-9]\d{0,2})\.\s+'
+    r'C\s*\.?\s*P\s*\.?\s*\(\s*I\s*\.?\s*B\s*\)\s*[/\-]?\s*'
+    r'0*(?P<number>\d{1,6})\s*(?:[/\-]?\s*\(?[A-Z]{2,12}\)?)?\s*[/\-]?\s*'
+    r'(?P<year>20\d{2})\b',
+    re.I,
+)
+
+
+def verified_main_sr_no(pdf_text: str, cfg: dict, ia_number: str | None = None) -> str | None:
+    """Unique CP(IB) parent Sr. No., optionally restricted to its exact child IA.
+
+    Uses only main-case rows, never the child IA column. Multiple/conflicting
+    parent matches, missing case identity, or absent child IA all yield None.
+    """
+    num, year = matter_case_signature(cfg.get('case_number') or '')
+    if not num or not year:
+        return None
+    target = norm_ia(ia_number) if ia_number else None
+    lines = (pdf_text or '').splitlines()
+    parents = []
+    for index, line in enumerate(lines):
+        m = _MAIN_CP_ROW.match(line)
+        if m:
+            parents.append((index, m))
+    candidates = set()
+    for i, (start, m) in enumerate(parents):
+        if int(m['number']) != int(num) or m['year'] != year:
+            continue
+        stop = parents[i + 1][0] if i + 1 < len(parents) else len(lines)
+        portion = '\n'.join(lines[start:stop])
+        if not re.search(r'\bMain\s+Case\b', '\n'.join(lines[start:start + 4]), re.I):
+            continue
+        if target:
+            # Require this *specific* child IA under this exact main case.
+            if target not in {norm_ia(x) for x in extract_ia_labels(portion)}:
+                continue
+        candidates.add(m['serial'])
+    return next(iter(candidates)) if len(candidates) == 1 else None
+
+
+def safe_main_sr_no(pdf_text: str, cfg: dict, ia_number: str | None = None) -> str | None:
+    # Optional metadata must NEVER disrupt existing VC/cause-list retrieval.
+    try:
+        return verified_main_sr_no(pdf_text, cfg, ia_number)
+    except Exception:
+        return None
+
+
 def scan_cause_docs(session: requests.Session, cfg: dict, docs: list[dict], cache: dict[str,dict]) -> dict:
     # Cause-list surveillance no longer creates IA/application records. It only
     # enriches IAs the user already entered, and only when the exact matter case
@@ -432,6 +486,7 @@ def scan_cause_docs(session: requests.Session, cfg: dict, docs: list[dict], cach
                 'cause_list_url': url,
                 'vc_url': vc_url,
                 'cause_list_date': doc.get('cause_date'),
+                'cause_list_serial': safe_main_sr_no(text, cfg),
                 'row_text': doc.get('row_text',''),
             }
             matches.append(match)
@@ -459,6 +514,7 @@ def scan_cause_docs(session: requests.Session, cfg: dict, docs: list[dict], cach
                         'cause_list_url':url,
                         'vc_url':vc_url,
                         'cause_list_date':cause_date,
+                        'cause_list_serial':safe_main_sr_no(text, cfg, prior_label),
                     })
         except Exception as e:
             errors.append(f'cause-list document {url}: {type(e).__name__}: {e}')
@@ -504,7 +560,7 @@ def dedupe_apps(items: list[dict]) -> list[dict]:
             elif xd < today and cd < today and xd > cd:
                 choose = True
         if choose:
-            for field in ('cause_list_url','vc_url','cause_list_date'):
+            for field in ('cause_list_url','vc_url','cause_list_date','cause_list_serial'):
                 cur[field] = x.get(field)
         if not cur.get('next_hearing_date') and x.get('next_hearing_date'):
             cur['next_hearing_date'] = x['next_hearing_date']
