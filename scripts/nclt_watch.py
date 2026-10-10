@@ -620,7 +620,21 @@ def self_test() -> None:
     assert current_orders[0]['order_date'] == '2026-07-08'
     assert len(legacy_orders) == 1 and 'ordersview.drt?path=xyz' in legacy_orders[0]['source_url']
     assert [len(x) for x in chunks([{'x':i} for i in range(25)], 12)] == [12,12,1]
+    assert case_history_soft_outage({'status':'failed'}, 'success', True)
+    assert not case_history_soft_outage({'status':'identity_mismatch'}, 'success', True)
+    assert not case_history_soft_outage({'status':'failed'}, 'failed', True)
+    assert not case_history_soft_outage({'status':'failed'}, 'success', False)
     print('NCLT watcher correctness self-test passed')
+
+def case_history_soft_outage(details: dict, cause_status: str, configured: bool) -> bool:
+    """Official case-history fetch outage while independent cause-list crawl works.
+
+    Deliberately DO NOT treat identity mismatch as a benign outage. Missing
+    cause-list coverage remains fatal. The ingest API records the case-history
+    failure and LIMITED coverage even when GitHub Actions does not fail.
+    """
+    return bool(configured and details.get('status') == 'failed' and cause_status == 'success')
+
 
 def main() -> int:
     if '--self-test' in sys.argv:
@@ -632,7 +646,7 @@ def main() -> int:
     if not matters:
         print('No active NCLT matters currently require watch.'); return 0
     cause = discover_cause_docs(session); cause_cache: dict[str,dict] = {}
-    total_apps = total_orders = ingest_failures = degraded = hard_failures = 0
+    total_apps = total_orders = ingest_failures = degraded = hard_failures = source_outages = 0
     if cause['status'] != 'success':
         hard_failures += 1
     for m in matters:
@@ -645,7 +659,22 @@ def main() -> int:
         has_exact_config = bool((m.get('nclt_filing_no') or '').strip() and ((m.get('nclt_bench_slug') or '').strip() or infer_bench_slug(m.get('case_number') or '')))
         coverage = 'full' if has_exact_config and details['status']=='success' and cause_scan['status']=='success' else ('cause-list-only' if cause_scan['status']=='success' else 'degraded')
         if has_exact_config and details['status'] != 'success':
-            hard_failures += 1
+            if case_history_soft_outage(details, cause_scan['status'], has_exact_config):
+                # Do not turn a successfully checked cause list into an Actions
+                # failure solely because the independent NCLT case-history site
+                # temporarily refuses service. This is LIMITED, not FULL, coverage:
+                # the ingest API persists this degraded source state unchanged.
+                source_outages += 1
+                reason = (details.get('errors') or ['case-history source inaccessible'])[0]
+                reason = re.sub(r'https?://\S+', '[official source URL]', reason)[:240]
+                print(
+                    f"::warning::NCLT case-history unavailable for "
+                    f"{m.get('short_name') or m.get('cause_title')}: {reason}. "
+                    f"Cause-list scan succeeded; new case-history orders cannot be verified.",
+                    file=sys.stderr,
+                )
+            else:
+                hard_failures += 1
         if details['status'] not in {'success','unconfigured'} or cause_scan['status'] != 'success':
             degraded += 1
         preferred_dates = {d for d in (m.get('next_hearing_date'),) if d}
@@ -683,7 +712,7 @@ def main() -> int:
         except Exception as e:
             ingest_failures += 1; hard_failures += 1; print(f'  ingest failed: {e}', file=sys.stderr)
         time.sleep(0.5)
-    print(f'NCLT watch complete: {len(matters)} matters, {total_apps} manual IA access links matched, {total_orders} orders imported, {degraded} degraded, {ingest_failures} ingest failures, {hard_failures} hard source failures')
+    print(f'NCLT watch complete: {len(matters)} matters, {total_apps} manual IA access links matched, {total_orders} orders imported, {degraded} degraded, {ingest_failures} ingest failures, {hard_failures} hard source failures, {source_outages} upstream case-history outages (LIMITED coverage)')
     return 1 if hard_failures else 0
 
 
