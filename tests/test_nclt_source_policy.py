@@ -149,4 +149,75 @@ class CauseFallbackTests(unittest.TestCase):
         self.assertEqual(len(result['errors']),2)
         self.assertTrue(policy.classify_cause_outage(result))
 
+
+
+class RealWorldTLSChainFailureTests(unittest.TestCase):
+    # 19 October 2026 production traceback, with shortened official URLs.
+    CERT = ("SSLError: HTTPSConnectionPool(host='nclt.gov.in', port=443): "
+            "Max retries exceeded with url: /all-cause-list "
+            "(Caused by SSLError(SSLCertVerificationError(1, "
+            "'[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: "
+            "self-signed certificate in certificate chain')))" )
+
+    def test_both_official_tls_cause_routes_are_transport_unavailable_not_verified(self):
+        cause = {'status':'failed', 'docs':[], 'successful_pages':0, 'responded_pages':0,
+                 'errors':[f'cause-list page {page}: {self.CERT}'
+                           for page in ('None', "{'page': 0}", "{'page': 1}")]}
+        self.assertTrue(policy.classify_cause_outage(cause))
+        for mutated in ({'responded_pages':1}, {'successful_pages':1}, {'docs':[{'url':'doc'}]}):
+            self.assertFalse(policy.classify_cause_outage({**cause, **mutated}))
+
+    def test_case_history_tls_chain_is_unavailable_not_identity_verified(self):
+        err = self.CERT.replace("host='nclt.gov.in'", "host='efiling.nclt.gov.in'")
+        self.assertTrue(policy.classify_case_history_outage(
+            {'status':'failed','errors':['case-status fetch: '+err]}))
+        self.assertFalse(policy.classify_case_history_outage(
+            {'status':'identity_mismatch','errors':['case-status fetch: '+err]}))
+
+    def test_arbitrary_ssl_errors_and_parser_drift_remain_hard_failures(self):
+        for error in ('SSLError: SSL bad record mac',
+                      'SSLError: HTTPSConnectionPool(host=other.example, port=443): bad handshake',
+                      'ValueError: parse failure',
+                      'HTTPError: 404'):
+            self.assertFalse(policy.classify_cause_outage({'status':'failed','docs':[],
+                'successful_pages':0,'responded_pages':0,'errors':['cause-list page None: '+error]}))
+            self.assertFalse(policy.classify_case_history_outage({'status':'failed',
+                'errors':['case-status fetch: '+error]}))
+
+    def test_certificate_outage_is_bounded_by_prior_verified_coverage(self):
+        self.assertTrue(policy.gate(outcome='failure',error_class='transient-cause-unavailable',
+                                    verified_age=15.8)[0])
+        self.assertFalse(policy.gate(outcome='failure',error_class='transient-cause-unavailable',
+                                     verified_age=30.01)[0])
+
+    def test_real_tls_simultaneous_failure_never_posts_to_matter_desk(self):
+        # The actual production watcher must short-circuit before ANY D1 writes.
+        scripts=str(pathlib.Path(__file__).resolve().parents[1] / 'scripts')
+        if scripts not in sys.path: sys.path.insert(0,scripts)
+        import nclt_watch
+        cfg={'matters':[
+            {'id':1,'short_name':'Ecstasy','case_number':'CP IB 922 of 2022',
+             'nclt_filing_no':'123','nclt_bench_slug':'mumbai'},
+            {'id':2,'short_name':'Videocon','case_number':'CP IB 2 of 2018',
+             'nclt_filing_no':'456','nclt_bench_slug':'mumbai'},
+            {'id':3,'short_name':'JUD','case_number':'CP IB 25 of 2020',
+             'nclt_filing_no':'789','nclt_bench_slug':'mumbai'},
+            {'id':4,'short_name':'Reliance','case_number':'CP IB 123 of 2020'},
+        ]}
+        cause={'status':'failed','docs':[],'successful_pages':0,'responded_pages':0,
+               'errors':['cause-list page None: '+self.CERT]}
+        def fetch(session,m):
+            if m['id']==4:return {'status':'unconfigured','errors':[]}
+            return {'status':'failed','errors':['case-status fetch: '+self.CERT]}
+        with patch.object(nclt_watch,'DESK_URL','https://example.com'), \
+             patch.object(nclt_watch,'SECRET','test'), \
+             patch.object(nclt_watch,'api_get',return_value=cfg), \
+             patch.object(nclt_watch,'discover_cause_docs',return_value=cause), \
+             patch.object(nclt_watch,'fetch_details',side_effect=fetch), \
+             patch.object(nclt_watch,'api_post') as post, \
+             patch.dict('os.environ',{'GITHUB_OUTPUT':''}):
+            rc=nclt_watch.main()
+        self.assertEqual(rc,75)
+        post.assert_not_called()
+
 if __name__=='__main__':unittest.main()

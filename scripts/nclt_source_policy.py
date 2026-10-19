@@ -29,6 +29,21 @@ def parse_stamp(raw):
         return None
 
 
+def _verified_tls_chain_unavailable(detail):
+    """Treat *only* a failed trust-chain handshake as unavailable, never as verified.
+
+    We never disable certificate verification, trust the unverified response, or
+    silently accept a document. Certificate problems remain visible in Actions
+    and must be escalated if last source verification exceeds the grace period.
+    Other SSL faults are not automatically dismissed as transient.
+    """
+    detail = str(detail)
+    return (('SSLError:' in detail or 'SSLCertVerificationError' in detail)
+            and ('SSLCertVerificationError' in detail or 'CERTIFICATE_VERIFY_FAILED' in detail)
+            and ('certificate verify failed' in detail.lower()
+                 or 'CERTIFICATE_VERIFY_FAILED' in detail))
+
+
 def classify_cause_outage(cause):
     """Only an entirely unreachable official listing is transport-transient.
 
@@ -46,7 +61,9 @@ def classify_cause_outage(cause):
                  'HTTPError: 429', 'HTTPError: 500', 'HTTPError: 502',
                  'HTTPError: 503', 'HTTPError: 504',
                  'HTTPError: 403')
-    return all('cause-list page' in e and any(s in e for s in transient) for e in failures)
+    return all('cause-list page' in e and
+               (any(s in e for s in transient) or _verified_tls_chain_unavailable(e))
+               for e in failures)
 
 
 def classify_case_history_outage(detail):
@@ -66,7 +83,7 @@ def classify_case_history_outage(detail):
                  'HTTPError: 503', 'HTTPError: 504')
     return bool(errors) and all(
         str(e).startswith('case-status fetch: ') and
-        any(x in str(e) for x in transient)
+        (any(x in str(e) for x in transient) or _verified_tls_chain_unavailable(e))
         for e in errors
     )
 
