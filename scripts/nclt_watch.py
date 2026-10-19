@@ -372,13 +372,19 @@ def fetch_details(session: requests.Session, cfg: dict) -> dict:
         })
     return result
 
-def discover_cause_docs(session: requests.Session) -> dict:
+def _discover_cause_route(session: requests.Session, base: str) -> dict:
+    """Read the same OFFICIAL cause-list feed, counting genuine HTTP responses.
+
+    The alternate /index.php/ path is an official NCLT route, not a mirror or
+    third-party source. HTTP 200 with no documents is never called a timeout.
+    """
     docs, errors, seen = [], [], set()
-    targets = [(CAUSE_LIST, None)] + [(CAUSE_LIST, {'page': page}) for page in range(0, CAUSE_PAGES)]
-    successful_pages = 0
+    targets = [(base, None)] + [(base, {'page': page}) for page in range(0, CAUSE_PAGES)]
+    successful_pages = responded_pages = 0
     for url, params in targets:
         try:
-            r = request_with_retry(session, url, params=params, timeout=30)
+            r = request_with_retry(session, url, params=params, timeout=20, attempts=2)
+            responded_pages += 1
             soup = BeautifulSoup(r.text, 'html.parser')
             page_docs = 0
             for tr in soup.find_all('tr'):
@@ -397,8 +403,29 @@ def discover_cause_docs(session: requests.Session) -> dict:
     status = 'success' if successful_pages and len(docs) >= 5 else 'failed'
     if status == 'failed' and not errors:
         errors.append(f'cause-list discovery returned only {len(docs)} documents')
-    return {'docs':docs,'errors':errors,'status':status,'successful_pages':successful_pages}
+    return {'docs':docs,'errors':errors,'status':status,
+            'successful_pages':successful_pages,'responded_pages':responded_pages,
+            'official_route':base}
 
+
+def discover_cause_docs(session: requests.Session) -> dict:
+    primary = _discover_cause_route(session, CAUSE_LIST)
+    if primary['status']=='success':
+        return primary
+    # The official NCLT site serves the same route at /index.php/all-cause-list.
+    # Try it only when the canonical route fails. Neither route is accepted without
+    # real linked documents, and both retain the strict case/IA/date match rules.
+    alternate = _discover_cause_route(session, 'https://nclt.gov.in/index.php/all-cause-list')
+    if alternate['status']=='success':
+        print('::warning::Primary NCLT cause-list route failed; using verified official /index.php/ route',flush=True)
+        return alternate
+    return {
+        'docs':[], 'errors':primary['errors'] + alternate['errors'],
+        'status':'failed',
+        'successful_pages':primary['successful_pages']+alternate['successful_pages'],
+        'responded_pages':primary['responded_pages']+alternate['responded_pages'],
+        'official_route':'both official routes failed',
+    }
 
 
 # Optional recipient-facing main-case cause-list Sr. No.  This parser uses the
@@ -636,6 +663,9 @@ def case_history_soft_outage(details: dict, cause_status: str, configured: bool)
     return bool(configured and details.get('status') == 'failed' and cause_status == 'success')
 
 
+from nclt_source_policy import classify_cause_outage, classify_case_history_outage
+
+
 def main() -> int:
     if '--self-test' in sys.argv:
         self_test(); return 0
@@ -647,11 +677,49 @@ def main() -> int:
         print('No active NCLT matters currently require watch.'); return 0
     cause = discover_cause_docs(session); cause_cache: dict[str,dict] = {}
     total_apps = total_orders = ingest_failures = degraded = hard_failures = source_outages = 0
+    transient_cause = classify_cause_outage(cause)
     if cause['status'] != 'success':
         hard_failures += 1
+        cause_class = 'transient NCLT network outage' if transient_cause else 'cause-list discovery/schema failure'
+        print(f'::warning::NCLT {cause_class}; official documents found={len(cause["docs"])}; '
+              f'HTTP pages responded={cause.get("responded_pages",0)}; '
+              f'errors={len(cause.get("errors") or [])}',flush=True)
+        for reason in (cause.get('errors') or [])[:3]:
+            # Expose bounded diagnostic detail in logs instead of 3 opaque emails.
+            reason = re.sub(r'https?://\S+', '[official source URL]',str(reason))[:270]
+            print(f'NCLT_CAUSE_SOURCE_DIAGNOSTIC: {reason}',flush=True)
+    preflight_details = {}
+    if cause['status'] != 'success' and transient_cause:
+        # Preflight only for a total source-transport outage; ordinary healthy
+        # scans follow their original logic and exact matching requirements.
+        for m in matters:
+            preflight_details[m['id']] = fetch_details(session,m)
+        incompatible = []
+        for m in matters:
+            has_exact = bool((m.get('nclt_filing_no') or '').strip() and
+                             ((m.get('nclt_bench_slug') or '').strip() or
+                              infer_bench_slug(m.get('case_number') or '')))
+            if not has_exact:
+                continue
+            detail = preflight_details[m['id']]
+            if detail['status'] != 'success' and not classify_case_history_outage(detail):
+                incompatible.append(m['id'])
+        if not incompatible:
+            unavailable = sum(1 for d in preflight_details.values() if classify_case_history_outage(d))
+            print(f'::warning::NCLT verified sources temporarily unavailable: '
+                  f'cause-list transport failed, case-history transport failures={unavailable}. '
+                  'NO database writes or verified hearing changes were made. '
+                  'A bounded recovery check will retry.', flush=True)
+            if output := os.environ.get('GITHUB_OUTPUT'):
+                with open(output, 'a', encoding='utf-8') as f:
+                    f.write('cause_verified=false\nerror_class=transient-cause-unavailable\n')
+            return 75
+        print(f'::error::NCLT cause-list unavailable AND {len(incompatible)} '
+              'case-history check(s) have nontransient errors; not suppressing failure.',
+              flush=True)
     for m in matters:
         print(f"Checking matter {m['id']}: {m.get('short_name') or m.get('cause_title')}")
-        details = fetch_details(session,m)
+        details = preflight_details.get(m['id']) or fetch_details(session,m)
         cause_scan = scan_cause_docs(session,m,cause['docs'],cause_cache) if cause['status']=='success' else {
             'apps':[],'errors':['cause-list discovery failed'],'status':'failed','docs_scanned':0,'detected_bench_slug':None,'matches':[]}
         all_apps = dedupe_apps(details['apps'] + cause_scan['apps'])
@@ -713,7 +781,23 @@ def main() -> int:
             ingest_failures += 1; hard_failures += 1; print(f'  ingest failed: {e}', file=sys.stderr)
         time.sleep(0.5)
     print(f'NCLT watch complete: {len(matters)} matters, {total_apps} manual IA access links matched, {total_orders} orders imported, {degraded} degraded, {ingest_failures} ingest failures, {hard_failures} hard source failures, {source_outages} upstream case-history outages (LIMITED coverage)')
-    return 1 if hard_failures else 0
+    # Only a fully processed, verified NCLT cause-list refresh creates evidence.
+    # A transient source outage stays explicitly UNVERIFIED and uses exit 75;
+    # the scheduled GitHub gate then checks the last verified timestamp.
+    state = ('success' if hard_failures == 0 else
+             ('transient-cause-unavailable' if transient_cause and hard_failures == 1 and ingest_failures == 0
+              else 'hard-failure'))
+    verified = hard_failures == 0 and cause['status'] == 'success'
+    if output:=os.environ.get('GITHUB_OUTPUT'):
+        with open(output,'a',encoding='utf-8') as f:
+            f.write(f'cause_verified={str(verified).lower()}\n')
+            f.write(f'error_class={state}\n')
+    if verified:
+        from datetime import datetime, timezone
+        from pathlib import Path
+        Path('/tmp/nclt-cause-verified.txt').write_text(
+            datetime.now(timezone.utc).isoformat()+'\n', encoding='utf-8')
+    return 0 if hard_failures == 0 else (75 if state == 'transient-cause-unavailable' else 1)
 
 
 if __name__ == '__main__':

@@ -3,37 +3,75 @@ name: NCLT Matter Watch
 on:
   workflow_dispatch:
   schedule:
-    - cron: '30 3 * * *'    # 09:00 IST
-    - cron: '30 11 * * *'   # 17:00 IST
-    - cron: '30 12 * * *'   # 18:00 IST
-    - cron: '30 13 * * *'   # 19:00 IST
+    - cron: '30 3 * * *'    # main 09:00 IST (best effort)
+    - cron: '0 5 * * *'     # 10:30 recovery, skipped if recent verified check
+    - cron: '30 11 * * *'   # main 17:00 IST (best effort)
+    - cron: '30 13 * * *'   # 19:00 recovery, skipped if recent verified check
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: nclt-matter-watch
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Checkout tracker source
         uses: actions/checkout@v6
+      - name: Decide whether recovery run is needed
+        id: due
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == 'schedule' && ( "$SCHEDULE" == '0 5 * * *' || "$SCHEDULE" == '30 13 * * *' ) ]]; then
+            python3 scripts/nclt_source_policy.py --mode recovery
+          else
+            echo 'run=true' >> "$GITHUB_OUTPUT"
+          fi
       - name: Setup Python
+        if: steps.due.outputs.run == 'true'
         uses: actions/setup-python@v6
         with:
           python-version: '3.12'
       - name: Install public-source parser dependencies
+        if: steps.due.outputs.run == 'true'
         run: pip install --disable-pip-version-check requests beautifulsoup4 pypdf
       - name: Watcher parser self-test
-        run: python scripts/nclt_watch.py --self-test
+        if: steps.due.outputs.run == 'true'
+        run: |
+          python scripts/nclt_watch.py --self-test
+          python -m unittest discover -s tests -p 'test_nclt_source_policy.py' -q
       - name: Check NCLT for new IAs and orders
+        id: watcher
+        if: steps.due.outputs.run == 'true'
+        continue-on-error: true
         env:
           MATTER_DESK_URL: https://matter-desk-67d2cc.pages.dev
           NCLT_WATCH_SECRET: ${{ secrets.NCLT_WATCH_SECRET }}
           NCLT_CAUSE_PAGES: '8'
           NCLT_MAX_UNSCOPED_DOCS: '60'
         run: python scripts/nclt_watch.py
+      - name: Keep evidence of independently verified cause-list scan
+        if: steps.watcher.outcome == 'success' && steps.watcher.outputs.cause_verified == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nclt-cause-verified-${{ github.run_id }}
+          path: /tmp/nclt-cause-verified.txt
+          if-no-files-found: error
+          retention-days: 7
+      - name: Validate source-health and decide whether to alert
+        if: always() && steps.due.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WATCH_OUTCOME: ${{ steps.watcher.outcome }}
+          WATCH_ERROR_CLASS: ${{ steps.watcher.outputs.error_class }}
+        run: python scripts/nclt_source_policy.py --mode gate
